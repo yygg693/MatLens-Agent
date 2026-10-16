@@ -1,0 +1,13 @@
+{
+  "audience": "项目负责人、开发与运维团队",
+  "reader_task": "掌握 MatLens Agent 项目能力全貌、核实运行环境状态，明确优先改进方向",
+  "genre_contract": "strategy-and-analysis",
+  "adapter": null,
+  "presentation_mode": "rich",
+  "visual_plan": {
+    "reason": "生态规模与能力构成用 html5-block 图表展示，实测数据与风险矩阵用原生表格呈现，避免重复表达",
+    "blocks": [
+      {"type": "html5-block", "min_count": 2, "purpose": "展示能力生态规模与分维度能力评估"}
+    ]
+  }
+}

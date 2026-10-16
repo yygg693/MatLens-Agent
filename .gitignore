@@ -1,0 +1,24 @@
+# ---- MatLens 敏感与本地文件 ----
+.env
+.env.*
+!.env.example
+.matlens/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- 运行产物 ----
+logs/
+*.log
+.matlens-*
+vendor/
+
+# ---- 本地备份与一次性产物（2026-10-16）----
+_backup*/
+_archive/
+_e2e_server*.log
+_e2e_*.png
+*.bak

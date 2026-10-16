@@ -1,0 +1,4 @@
+﻿DeepSeek: 398ms, 2 models
+  deepseek-flash = DeepSeek-V4.1-Flash
+  deepseek-v4-pro = DeepSeek-V4-Pro
+OpenRouter: 1764ms, 469 models

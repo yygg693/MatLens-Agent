@@ -1,0 +1,139 @@
+<title>MatLens Agent 项目能力测评报告</title>
+<callout background-color="light-gray" border-color="gray">
+<p><b>核心问题：</b>MatLens Agent（D:\MatLens）当前具备哪些能力、运行环境是否就绪、最优先该做什么。</p>
+<ol>
+<li><b>能力面广：</b>v0.20.1，约 144 万行 Python，覆盖 31 个消息平台、34 个模型提供方、8 个记忆后端，功能完整性接近一线开源 Agent 项目。</li>
+<li><b>质量基线可靠：</b>3,033 个测试文件，本机抽样 47 项测试全部通过；CLI 55+ 个子命令正常启动。</li>
+<li><b>环境就绪度偏低：</b>Python 3.13.13 已安装且 py 默认指向（满足项目要求 3.11 ≤ 版本 &lt; 3.14），但项目无虚拟环境、依赖未完整安装，全量测试暂无法直接运行。</li>
+<li><b>优先行动：</b>用 uv 创建 3.13 虚拟环境补全依赖，跑通全量测试，再初始化 Git 仓库。</li>
+</ol>
+</callout>
+<h1 seq="auto">测评概览与总体判断</h1>
+<h2>测评范围与方法</h2>
+<table>
+<colgroup><col width="180"/><col width="340"/><col width="300"/></colgroup>
+<thead><tr><th><p>维度</p></th><th><p>方法</p></th><th><p>状态</p></th></tr></thead>
+<tbody>
+<tr><td><p>代码规模与生态</p></td><td><p>本机文件系统实测统计（2026-09-18）</p></td><td><p>完成</p></td></tr>
+<tr><td><p>运行能力</p></td><td><p>实际执行 CLI 命令与抽样 pytest</p></td><td><p>完成（抽样通过）</p></td></tr>
+<tr><td><p>运行环境</p></td><td><p>解释器、依赖与虚拟环境核查</p></td><td><p>完成</p></td></tr>
+</tbody>
+</table>
+<h2>总体判断：能力覆盖 A 级，环境就绪度 C 级</h2>
+<p><b>项目整体评级为 A-</b>：核心引擎、平台覆盖、模型生态与自动化能力处于同类项目第一梯队，架构理念清晰（核心窄腰、边缘扩展）；主要短板不在代码本身，而在于本地运行链路尚未完全打通。</p>
+<p>以下为能力生态规模实测结果，条形宽度按最大值归一化：</p>
+<html5-block path="@./draft_89790ae5_folder/ecosystem.html"/>
+<p>生态呈现"接入面极宽、扩展靠插件"的特征：平台、模型、记忆三类接入全部插件化，核心工具集稳定，符合项目文档宣称的"能力在边缘生长"设计。工具与技能类（深色条）体量明显大于接入类（浅色条），说明项目重心在自身能力沉淀而非单纯对接外部服务。</p>
+<h1 seq="auto">分维度能力评估</h1>
+<h2>核心代理引擎：功能密度高，维护成本大</h2>
+<table>
+<colgroup><col width="200"/><col width="110"/><col width="510"/></colgroup>
+<thead><tr><th><p>核心文件</p></th><th><p>行数</p></th><th><p>职责</p></th></tr></thead>
+<tbody>
+<tr><td><p>gateway/run.py</p></td><td><p>27,943</p></td><td><p>消息网关主循环与多平台分发</p></td></tr>
+<tr><td><p>cli.py</p></td><td><p>18,132</p></td><td><p>交互式 CLI 编排与 55+ 子命令</p></td></tr>
+<tr><td><p>matlens_state.py</p></td><td><p>11,799</p></td><td><p>SQLite 会话存储与 FTS5 全文搜索</p></td></tr>
+<tr><td><p>run_agent.py</p></td><td><p>8,222</p></td><td><p>AIAgent 核心对话循环</p></td></tr>
+<tr><td><p>cron/scheduler.py</p></td><td><p>6,045</p></td><td><p>定时任务调度</p></td></tr>
+<tr><td><p>model_tools.py</p></td><td><p>1,467</p></td><td><p>工具编排与内置工具发现</p></td></tr>
+<tr><td><p>toolsets.py</p></td><td><p>1,000</p></td><td><p>工具集定义与平台分配</p></td></tr>
+</tbody>
+</table>
+<html5-block path="@./draft_89790ae5_folder/modules.html"/>
+<p>gateway/run.py、cli.py、matlens_state.py 三个文件合计近 5.8 万行，功能密度极高，但属于典型 god-file，评审与维护成本大；项目自身的开发指南已将其列为优先重构对象。</p>
+<h2>消息平台覆盖：31 个适配器，远超文档描述</h2>
+<table>
+<colgroup><col width="160"/><col width="110"/><col width="550"/></colgroup>
+<thead><tr><th><p>范围</p></th><th><p>数量</p></th><th><p>说明</p></th></tr></thead>
+<tbody>
+<tr><td><p>核心网关</p></td><td><p>9</p></td><td><p>api_server、qqbot、signal、webhook、weixin、whatsapp_cloud、yuanbao、bluebubbles、msgraph_webhook</p></td></tr>
+<tr><td><p>插件平台</p></td><td><p>22</p></td><td><p>telegram、discord、slack、feishu、matrix、mattermost、teams、homeassistant、email、sms、dingtalk、wecom、line、irc 等</p></td></tr>
+<tr><td><p>合计</p></td><td><p>31</p></td><td><p>均按适配器目录实测统计</p></td></tr>
+</tbody>
+</table>
+<p>平台能力已从核心内置迁移为 plugins/platforms 插件化扩展，覆盖面超出 AGENTS.md 描述的约 20 个；文档滞后于实际代码，新人按文档定位会找错位置。</p>
+<h2>模型与记忆生态：34 个模型提供方、8 个记忆后端</h2>
+<table>
+<colgroup><col width="160"/><col width="110"/><col width="550"/></colgroup>
+<thead><tr><th><p>类别</p></th><th><p>数量</p></th><th><p>代表项</p></th></tr></thead>
+<tbody>
+<tr><td><p>模型提供方</p></td><td><p>34</p></td><td><p>anthropic、gemini、deepseek、openrouter、openai-codex、xai、vertex、bedrock、azure-foundry、gmi、kimi、minimax、nvidia、qwen-oauth、zai、xiaomi 等</p></td></tr>
+<tr><td><p>记忆提供方</p></td><td><p>8</p></td><td><p>honcho、mem0、supermemory、byterover、hindsight、holographic、openviking、retaindb</p></td></tr>
+</tbody>
+</table>
+<p>模型侧覆盖主流闭源、开源与国产厂商，支持 OAuth 与统一代理；记忆侧提供可插拔后端，配合 SQLite FTS5 会话搜索与 curator 技能生命周期管理，形成"会话—技能—长期记忆"三层学习闭环。</p>
+<h2>任务自动化与协作：内置调度与多代理</h2>
+<table>
+<colgroup><col width="180"/><col width="220"/><col width="420"/></colgroup>
+<thead><tr><th><p>能力</p></th><th><p>实现</p></th><th><p>说明</p></th></tr></thead>
+<tbody>
+<tr><td><p>定时任务</p></td><td><p>cron 调度器</p></td><td><p>支持 cron、at 与自然语言周期，跨平台投递</p></td></tr>
+<tr><td><p>多代理看板</p></td><td><p>kanban</p></td><td><p>任务板分发与多代理协作</p></td></tr>
+<tr><td><p>混合代理</p></td><td><p>moa</p></td><td><p>Mixture of Agents 槽位配置</p></td></tr>
+<tr><td><p>子代理委派</p></td><td><p>delegate_task</p></td><td><p>批量并行、后台执行、上下文隔离</p></td></tr>
+<tr><td><p>断点恢复</p></td><td><p>checkpoints</p></td><td><p>长任务中断恢复</p></td></tr>
+</tbody>
+</table>
+<h2>前端与集成面：四端齐备</h2>
+<table>
+<colgroup><col width="200"/><col width="120"/><col width="500"/></colgroup>
+<thead><tr><th><p>端</p></th><th><p>TS 文件数</p></th><th><p>说明</p></th></tr></thead>
+<tbody>
+<tr><td><p>Ink TUI</p></td><td><p>452</p></td><td><p>终端交互界面</p></td></tr>
+<tr><td><p>Web dashboard</p></td><td><p>162</p></td><td><p>浏览器控制台</p></td></tr>
+<tr><td><p>Electron 桌面端</p></td><td><p>1,615</p></td><td><p>独立桌面应用</p></td></tr>
+<tr><td><p>ACP 适配器</p></td><td><p>—</p></td><td><p>VS Code / Zed / JetBrains 编辑器集成</p></td></tr>
+</tbody>
+</table>
+<h2>八维能力评分</h2>
+<html5-block path="@./draft_89790ae5_folder/radar.html"/>
+<p>评分（1–5 分，评估判断）显示：消息平台覆盖与模型生态为 5 分，属同类第一梯队；核心引擎、记忆学习、任务自动化、前端集成、测试体系均为 4 分；环境就绪度仅 2 分，是唯一明显短板，也是改进优先级最高的环节。</p>
+<h1 seq="auto">实测验证记录：核心链路抽样通过</h1>
+<table>
+<colgroup><col width="200"/><col width="300"/><col width="320"/></colgroup>
+<thead><tr><th><p>验证项</p></th><th><p>方式</p></th><th><p>结果</p></th></tr></thead>
+<tbody>
+<tr><td><p>CLI 启动</p></td><td><p>matlens --help</p></td><td><p>正常，暴露 55+ 子命令</p></td></tr>
+<tr><td><p>版本信息</p></td><td><p>matlens version</p></td><td><p>v0.20.1（Python 3.13.13 / OpenAI SDK 2.24.0）</p></td></tr>
+<tr><td><p>抽样测试</p></td><td><p>pytest 三组共 47 项</p></td><td><p>全部通过（工具注册、cron 架构、会话库、模型路由、认证）</p></td></tr>
+<tr><td><p>工具集</p></td><td><p>toolsets.py 读取</p></td><td><p>36 个工具集</p></td></tr>
+<tr><td><p>平台注册</p></td><td><p>适配器目录实测</p></td><td><p>31 个</p></td></tr>
+</tbody>
+</table>
+<p>全量测试（3,033 个测试文件）因依赖未完整安装（收集时报缺 acp 模块）暂无法运行，属环境问题而非代码缺陷。</p>
+<h1 seq="auto">运行环境核实：Python 3.13 就绪，依赖链路待补全</h1>
+<h2>解释器与工具链</h2>
+<table>
+<colgroup><col width="200"/><col width="120"/><col width="500"/></colgroup>
+<thead><tr><th><p>项目</p></th><th><p>状态</p></th><th><p>说明</p></th></tr></thead>
+<tbody>
+<tr><td><p>Python 3.13.13</p></td><td><p>已安装</p></td><td><p>D:\Python313\python.exe，py 启动器默认指向，满足项目 requires-python（3.11 ≤ 版本 &lt; 3.14）</p></td></tr>
+<tr><td><p>python 命令</p></td><td><p>注意</p></td><td><p>PATH 中 python 解析到 3.14.7，超出支持范围；应使用 py -3.13 或虚拟环境</p></td></tr>
+<tr><td><p>uv</p></td><td><p>可用</p></td><td><p>0.11.6，可一键创建与管理环境</p></td></tr>
+<tr><td><p>关键依赖</p></td><td><p>部分就绪</p></td><td><p>3.13 环境已装 openai 2.24.0、pytest 9.0.3、fastapi、httpx、pydantic 2.12.5、uvicorn</p></td></tr>
+</tbody>
+</table>
+<h2>环境缺口</h2>
+<table>
+<colgroup><col width="300"/><col width="520"/></colgroup>
+<thead><tr><th><p>缺口</p></th><th><p>影响</p></th></tr></thead>
+<tbody>
+<tr><td><p>项目目录无虚拟环境</p></td><td><p>依赖与全局环境混装，无法稳定复现</p></td></tr>
+<tr><td><p>matlens-agent 未以包形式安装</p></td><td><p>测试导入依赖手工设置 PYTHONPATH</p></td></tr>
+<tr><td><p>tests/acp 缺 acp 模块</p></td><td><p>全量测试收集阶段失败</p></td></tr>
+</tbody>
+</table>
+<h1 seq="auto">风险与改进建议</h1>
+<table>
+<colgroup><col width="220"/><col width="260"/><col width="340"/></colgroup>
+<thead><tr><th><p>风险</p></th><th><p>影响</p></th><th><p>建议</p></th></tr></thead>
+<tbody>
+<tr><td><p>环境未就绪</p></td><td><p>无法全量验证质量基线</p></td><td><p>uv venv --python 3.13 建环境，安装依赖并跑通全量测试</p></td></tr>
+<tr><td><p>无 Git 仓库</p></td><td><p>无法回溯、对比与协作</p></td><td><p>git init 提交基线</p></td></tr>
+<tr><td><p>god-file 过大</p></td><td><p>维护与评审成本高</p></td><td><p>按模块拆分 gateway/run.py、cli.py</p></td></tr>
+<tr><td><p>文档滞后</p></td><td><p>新人定位困难</p></td><td><p>同步 AGENTS.md 中的平台数量与测试规模</p></td></tr>
+</tbody>
+</table>
+<p><b>行动优先级：</b>第一，用 uv 建 3.13 虚拟环境并安装依赖，跑通全量测试（预计 1 小时内可完成）；第二，git init 建立版本基线；第三，重构 god-file 并更新文档。</p>
+<h1 seq="auto">数据口径与边界说明</h1>
+<p>本报告全部数据来自本机（2026-09-18）实测，无外部网络数据引用：文件与行数按目录递归统计，测试文件按 test_*.py 命名匹配；平台数等于核心网关 9 个加插件平台 22 个；模型提供方与记忆提供方按插件目录统计；CLI 能力以 matlens --help 输出为准；抽样测试为 3 组共 47 项。能力评分为主观评估判断，已在图中标注，不构成对代码质量的定量度量。</p>

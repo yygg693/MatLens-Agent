@@ -1,0 +1,10 @@
+# MatLens 本地文献知识库插件元数据
+name: matlens-local-rag
+version: 0.1.0
+description: 本地文献知识库 RAG（FAISS + 复用主 provider 嵌入 + pdfplumber），多知识库管理与对话检索
+entry: matlens_kit.plugins.local_rag
+tools:
+  - rag_search
+commands:
+  - /kb
+offline: true

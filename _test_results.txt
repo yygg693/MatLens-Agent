@@ -1,0 +1,8 @@
+﻿[OK 200] /api/health -> {"ok":true,"service":"matlens-api","version":"0.1.0","hooks":{"installed":false,"tool_request":0,"tool_execution":0},"db":{"papers_db_kb":200.0,"state
+[OK 200] /api/sessions -> {"sessions":[{"id":"9472ec1111e74b6393a8a49b07e8421e","title":"æä¾ åå åå","preview":"ä½ å¥½","message_count":2,"source":"web","model":"nvid
+[OK 200] /api/kb -> {"active":"demo-kb","kbs":[{"name":"demo-kb","display_name":"demo-kb","active":true,"docs":1,"chunks":1,"document_list":[{"id":"b0d6aac16892","source"
+[FAIL 503] /api/memory -> 远程服务器返回错误: (503) 服务器不可用。
+[OK 200] /api/graph -> {"nodes":[],"edges":[],"empty":true,"message":"ææ è®°å¿å¯ä¾æå¾"}
+[OK 200] /api/papers -> {"ok":true,"papers":[{"id":"dbd69f16bc7c43f69f7f805f2a3fe6e2","title":"ééç¿ç¨³å®æ§åéééªè¯","paper_type":"research","topic":"ééç¿å¤
+[OK 200] /api/tools -> {"ok":true,"material":[{"name":"balance_equation","cn":"åå­¦æ¹ç¨å¼éå¹³","cat":"ææè®¡ç®","desc":"è¾å¥æªéå¹³æ¹ç¨å¼ï¼è¾åºéå¹³ç³»
+[OK 200] /api/experiment/list -> {"ok":true,"count":2,"records":[{"id":"e247e9964a404520999499dde513d860","title":"æµè¯-ZnOçº³ç±³æ£å®æ´æ¹æ¡","note":"","template":"hydrothermal"
