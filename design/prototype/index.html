@@ -760,6 +760,51 @@ input,textarea,select{font-family:inherit;font-size:13px}
 .kb-import-row b{color:var(--ml-sky);font-weight:600}
 .kb-import-row button{margin-left:auto}
 .kb-import-tip{font-size:11px;color:var(--ml-text-faint);padding:6px 3px 0;line-height:1.55}
+/* 题录导入区（2026-10-16）—— 与上方全文上传分区，避免用户混淆 */
+.cite-sec{margin-top:18px;padding-top:16px;border-top:1px solid var(--ml-card-border)}
+.cite-sec-h{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:11px}
+.cite-sec-h b{font-size:13px;font-weight:700;color:var(--ml-text)}
+.cite-sec-h span{font-size:11.5px;color:var(--ml-text-faint)}
+.cite-flow{display:flex;flex-direction:column;gap:11px}
+.cite-step{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:12px;
+  background:var(--ml-card-deep);border:1px dashed var(--ml-card-border);cursor:pointer;
+  transition:border-color .2s,background .2s}
+.cite-step:hover{border-color:rgba(56,189,248,.4);background:rgba(56,189,248,.05)}
+.cite-step.over{border-color:var(--ml-accent);background:rgba(56,189,248,.09)}
+.cite-step svg{width:22px;height:22px;flex:none;stroke:var(--ml-sky);fill:none;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+.cite-step-t b{display:block;font-size:12.5px;font-weight:600;color:var(--ml-text)}
+.cite-step-t span{display:block;font-size:11px;color:var(--ml-text-faint);margin-top:3px;line-height:1.5}
+.cite-preview{border-radius:12px;border:1px solid var(--ml-card-border);overflow:hidden;
+  background:var(--ml-card)}
+.cite-pv-head{display:flex;align-items:center;gap:9px;padding:10px 13px;flex-wrap:wrap;
+  border-bottom:1px solid var(--ml-card-border);font-size:11.5px;color:var(--ml-text-dim)}
+.cite-pv-head .cv-fmt{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:7px;
+  background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.28);color:var(--ml-sky)}
+.cite-pv-head .cv-n{color:var(--ml-text-faint)}
+.cite-pv-head .cv-n b{color:var(--ml-text);font-weight:700}
+.cite-pv-list{max-height:260px;overflow-y:auto;padding:4px 0}
+.cite-pv-item{display:flex;align-items:flex-start;gap:10px;padding:9px 13px;font-size:12px;
+  border-bottom:1px solid var(--ml-card-border)}
+.cite-pv-item:last-child{border-bottom:none}
+.cite-pv-i{flex:none;width:20px;height:20px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;font-size:10px;font-weight:700;background:var(--ml-card-deep);
+  border:1px solid var(--ml-card-border);color:var(--ml-text-faint);font-family:var(--mono)}
+.cite-pv-main{flex:1;min-width:0}
+.cite-pv-t{color:var(--ml-text);font-weight:600;line-height:1.5;word-break:break-word}
+.cite-pv-m{font-size:11px;color:var(--ml-text-faint);margin-top:3px;line-height:1.55}
+.cite-pv-m .cv-doi{font-family:var(--mono);color:var(--ml-sky)}
+.cite-pv-m .cv-nodoi{color:var(--ml-warn)}
+.cite-pv-acts{display:flex;gap:7px;padding:10px 13px;border-top:1px solid var(--ml-card-border);
+  background:var(--ml-card-deep)}
+.cite-pv-msg{padding:14px 13px;font-size:11.5px;color:var(--ml-text-faint);text-align:center;line-height:1.7}
+.cite-note{font-size:11px;color:var(--ml-text-faint);line-height:1.7;padding:10px 12px;
+  margin-top:11px;border-radius:10px;background:var(--ml-card-deep);
+  border:1px solid var(--ml-card-border)}
+.cite-note b{color:var(--ml-text-dim);font-weight:600}
+.cite-more{padding:8px 13px;font-size:11px;color:var(--ml-text-faint);text-align:center;
+  border-top:1px solid var(--ml-card-border);cursor:pointer}
+.cite-more:hover{color:var(--ml-sky)}
 /* 检索结果：相对排序 + 如实展示 score */
 .kb-hit-note{font-size:11px;color:var(--ml-text-faint);padding:0 2px 9px;line-height:1.55}
 .kb-hit{padding:10px 12px;margin-bottom:8px;border-radius:11px;background:var(--ml-card);
@@ -1773,6 +1818,31 @@ input,textarea,select{font-family:inherit;font-size:13px}
                 <button class="btn btn-ghost btn-sm" id="btn-kb-import">输入路径…</button>
               </div>
               <div class="kb-import-tip">支持工作区内的目录或单个文件路径，用逗号分隔多个。</div>
+
+              <!-- 题录导入（2026-10-16）：知网无公开 API，人工检索导出题录
+                   是中文文献唯一合规入口。与上面的「全文上传」是两条不同通路，
+                   故分区呈现，避免用户误以为传 txt 能拿到正文。 -->
+              <div class="cite-sec">
+                <div class="cite-sec-h">
+                  <b>导入题录</b>
+                  <span>知网 / 万方 / PubMed 导出的题录文件 → 解析为文献条目</span>
+                </div>
+                <div class="cite-flow">
+                  <div class="cite-step" id="cite-drop">
+                    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6M9 11h3"/></svg>
+                    <div class="cite-step-t">
+                      <b>选择或拖入题录文件</b>
+                      <span>支持 RefWorks(.txt) / EndNote(.enw) / RIS / BibTeX(.bib)</span>
+                    </div>
+                    <input type="file" id="cite-file" accept=".txt,.ris,.bib,.enw,.refworks,.rw" multiple style="display:none">
+                  </div>
+                  <div class="cite-preview" id="cite-preview" style="display:none"></div>
+                </div>
+                <div class="cite-note">
+                  题录只含<b>题名 / 作者 / 出处 / 年份 / DOI</b>等元数据，<b>不含正文</b>。
+                  需要正文请另行下载 PDF 上传；带 DOI 的条目可在检索页点「找 OA 全文」自动获取开放版本。
+                </div>
+              </div>
             </div>
 
             <!-- ══ 云端模式工作区（data-kbmode="cloud" 时显示） ══

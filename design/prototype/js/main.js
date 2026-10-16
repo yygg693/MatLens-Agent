@@ -29,6 +29,7 @@ import {
   loadSources, bindKbCloud,
 } from './kb.js';
 import { loadTools, openToolCatalog, closeToolCatalog, bindToolsPage } from './tools.js';
+import { bindCiteImport } from './kb_cite.js';
 import { initChatUI, renderEmptyState } from './chat_ui.js';
 // 2026-10-15 重做：右栏四panel 全部接真实数据（原三块是死占位）
 import { initRightPanel, switchRightTab, refreshRightPanel } from './chat_right.js';
@@ -167,6 +168,8 @@ function bindEvents() {
   if (kbFilter) kbFilter.addEventListener('input', () => filterDocs(kbFilter.value));
   const kbImport = $id('btn-kb-import');
   if (kbImport) kbImport.addEventListener('click', () => importByPaths());
+  // 题录导入（知网人工检索导出 → 本地入库，中文文献唯一合规入口）
+  bindCiteImport();
   const kbReadClose = $id('kb-read-close');
   if (kbReadClose) kbReadClose.addEventListener('click', closeDocReader);
   const kbReadMask = $id('kb-read-mask');

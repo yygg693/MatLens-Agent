@@ -555,8 +555,15 @@ def import_citations(name: str, payload: Dict[str, Any] = None) -> Dict[str, Any
             continue
         safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title).strip()
         safe = re.sub(r"\s+", " ", safe)[:56].rstrip(". ") or "untitled"
+        # 文件名带 DOI：底层 KnowledgeBase 按**文件名**去重，若只用序号+标题，
+        # 同一文献从不同题录文件导入会生成不同名字（如 01_标题.md 与 02_标题.md），
+        # 结果重复入库且用户看不出是同一篇。用 DOI 做稳定标识才能正确去重。
+        doi_key = re.sub(r"[^A-Za-z0-9]", "_", str(it.get("doi") or ""))
+        name = f"{n + 1:02d}_{safe}"
+        if doi_key:
+            name += f"__{doi_key}"
         try:
-            p = out_dir / f"{n + 1:02d}_{safe}.md"
+            p = out_dir / f"{name}.md"
             p.write_text(bib.to_markdown([it]), encoding="utf-8")
         except OSError:
             continue
