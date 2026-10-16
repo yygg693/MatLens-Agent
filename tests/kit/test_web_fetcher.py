@@ -717,3 +717,181 @@ class TestProxyManager:
         src = inspect.getsource(pm)
         for banned in ("random.choice", "proxy_list", "free_proxy", "pool[", "random_proxy"):
             assert banned not in src, f"不应出现 {banned}"
+
+
+# ────────────────────────────────────────────────────────────
+# Unpaywall OA 自动降级链（2026-10-16）
+# ────────────────────────────────────────────────────────────
+class TestOaFallback:
+    """抓不到正文时自动转向合法开放获取版本。
+
+    背景：IOP（iopscience.iop.org）整站跳 validate.perfdrive.com 反爬，
+    robots 也禁止 —— 但这些论文大多有 arXiv 预印本，Unpaywall 能解析出来。
+    实测 10.1039/C4CP00856A：从 0 字符变成 64004 字全文。
+    """
+
+    def test_doi_from_url_doi_org(self):
+        assert wf._doi_from_url("https://doi.org/10.1039/C4CP00856A") == "10.1039/C4CP00856A"
+
+    def test_doi_from_publisher_url(self):
+        assert wf._doi_from_url(
+            "https://iopscience.iop.org/article/10.1149/1.1837395") == "10.1149/1.1837395"
+
+    def test_doi_from_nature_article_url(self):
+        """Nature 用 sXXXX 编号，需补 10.1038 前缀（实测过严正则会漏）。"""
+        assert wf._doi_from_url(
+            "https://www.nature.com/articles/s41560-023-01321-7") == "10.1038/s41560-023-01321-7"
+
+    def test_doi_from_url_strips_trailing_punct(self):
+        assert wf._doi_from_url("https://x.org/10.1039/C4CP00856A.") == "10.1039/C4CP00856A"
+
+    def test_doi_from_url_returns_empty_when_unknown(self):
+        """无法确定前缀时宁可不降级，也别查错文献。"""
+        assert wf._doi_from_url("https://arxiv.org/abs/1404.3036") == ""
+        assert wf._doi_from_url("https://example.com/page") == ""
+
+    def test_fallback_disabled_by_flag(self, monkeypatch):
+        monkeypatch.setattr(wf, "_robots_allows", lambda u: (False, "robots 禁止"))
+        r = wf.fetch("https://iopscience.iop.org/article/10.1149/1.1837395",
+                     oa_fallback=False)
+        assert r["ok"] is False
+        assert "oa_fallback" not in r, "关闭降级时不应触发 Unpaywall"
+
+    def test_blocked_site_never_falls_back(self, monkeypatch):
+        """明令禁止的站点连找替代版都不做 —— 那是服务条款层面的禁止。"""
+        called = []
+        monkeypatch.setattr(wf, "_robots_allows", lambda u: (True, "允许"))
+        monkeypatch.setattr(wf, "_try_oa_fallback",
+                            lambda *a, **k: called.append(a))
+        wf.fetch("https://kns.cnki.net/kns8s/search")
+        assert not called, "禁止名单站点不应触发 OA 降级"
+
+    def test_same_domain_oa_is_rejected(self, monkeypatch):
+        """bronze 版常仍指向出版商自身，换域名才有意义 —— 直接标注不重试。"""
+        oa = {"is_oa": True, "oa_status": "bronze",
+              "oa_url": "https://iopscience.iop.org/article/10.1149/1.1837395/pdf"}
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall",
+                            lambda doi, timeout=15.0: dict(oa))
+        res = wf.FetchResult(ok=False, url="https://iopscience.iop.org/article/10.1149/1.1837395")
+        wf._try_oa_fallback(res, "10.1149/1.1837395")
+        assert res.get("oa_fallback_error"), "同域 OA 必须说明原因"
+        assert "bronze" in res["oa_fallback_error"]
+
+    def test_no_oa_version_reported_honestly(self, monkeypatch):
+        """没有合法 OA 版本时如实说明，不编造链接。"""
+        oa = {"is_oa": False, "oa_status": "closed", "oa_url": ""}
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall",
+                            lambda doi, timeout=15.0: dict(oa))
+        res = wf.FetchResult(ok=False, url="https://x.org/a")
+        wf._try_oa_fallback(res, "10.1/x")
+        assert res.get("oa_fallback_error")
+        assert "没有合法开放获取版本" in res["oa_fallback_error"]
+        assert not res.get("text")
+
+    def test_unpaywall_exception_is_contained(self, monkeypatch):
+        def boom(doi, timeout=15.0):
+            raise RuntimeError("未配置 UNPAYWALL_EMAIL")
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall", boom)
+        res = wf.FetchResult(ok=False, url="https://x.org/a")
+        wf._try_oa_fallback(res, "10.1/x")     # 不应抛出
+        assert "Unpaywall 查询失败" in res.get("oa_fallback_error", "")
+
+    def test_fallback_respects_blocked_list(self, monkeypatch):
+        """OA 目标域名若本身在禁止名单里，也不能抓。"""
+        oa = {"is_oa": True, "oa_status": "green",
+              "oa_url": "https://some.cnki.net/paper.pdf"}
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall",
+                            lambda doi, timeout=15.0: dict(oa))
+        res = wf.FetchResult(ok=False, url="https://x.org/a")
+        wf._try_oa_fallback(res, "10.1/x")
+        # 递归 fetch 内部会再做禁止名单检查；此处至少不应声称成功
+        assert not res.get("resolved_via")
+
+
+# ────────────────────────────────────────────────────────────
+# Unpaywall OA 自动降级链（2026-10-16）
+# ────────────────────────────────────────────────────────────
+class TestOaFallback:
+    """抓不到正文时自动转向合法开放获取版本。
+
+    背景：IOP（iopscience.iop.org）整站跳 validate.perfdrive.com 反爬，
+    robots 也禁止 —— 但这些论文大多有 arXiv 预印本，Unpaywall 能解析出来。
+    实测 10.1039/C4CP00856A：从 0 字符变成 64004 字全文。
+    """
+
+    def test_doi_from_url_doi_org(self):
+        assert wf._doi_from_url("https://doi.org/10.1039/C4CP00856A") == "10.1039/C4CP00856A"
+
+    def test_doi_from_publisher_url(self):
+        assert wf._doi_from_url(
+            "https://iopscience.iop.org/article/10.1149/1.1837395") == "10.1149/1.1837395"
+
+    def test_doi_from_nature_article_url(self):
+        """Nature 用 sXXXX 编号，需补 10.1038 前缀（实测过严正则会漏）。"""
+        assert wf._doi_from_url(
+            "https://www.nature.com/articles/s41560-023-01321-7") == "10.1038/s41560-023-01321-7"
+
+    def test_doi_from_url_strips_trailing_punct(self):
+        assert wf._doi_from_url("https://x.org/10.1039/C4CP00856A.") == "10.1039/C4CP00856A"
+
+    def test_doi_from_url_returns_empty_when_unknown(self):
+        """无法确定前缀时宁可不降级，也别查错文献。"""
+        assert wf._doi_from_url("https://arxiv.org/abs/1404.3036") == ""
+        assert wf._doi_from_url("https://example.com/page") == ""
+
+    def test_fallback_disabled_by_flag(self, monkeypatch):
+        monkeypatch.setattr(wf, "_robots_allows", lambda u: (False, "robots 禁止"))
+        r = wf.fetch("https://iopscience.iop.org/article/10.1149/1.1837395",
+                     oa_fallback=False)
+        assert r["ok"] is False
+        assert "oa_fallback" not in r, "关闭降级时不应触发 Unpaywall"
+
+    def test_blocked_site_never_falls_back(self, monkeypatch):
+        """明令禁止的站点连找替代版都不做 —— 那是服务条款层面的禁止。"""
+        called = []
+        monkeypatch.setattr(wf, "_robots_allows", lambda u: (True, "允许"))
+        monkeypatch.setattr(wf, "_try_oa_fallback",
+                            lambda *a, **k: called.append(a))
+        wf.fetch("https://kns.cnki.net/kns8s/search")
+        assert not called, "禁止名单站点不应触发 OA 降级"
+
+    def test_same_domain_oa_is_rejected(self, monkeypatch):
+        """bronze 版常仍指向出版商自身，换域名才有意义 —— 直接标注不重试。"""
+        oa = {"is_oa": True, "oa_status": "bronze",
+              "oa_url": "https://iopscience.iop.org/article/10.1149/1.1837395/pdf"}
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall",
+                            lambda doi, timeout=15.0: dict(oa))
+        res = wf.FetchResult(ok=False, url="https://iopscience.iop.org/article/10.1149/1.1837395")
+        wf._try_oa_fallback(res, "10.1149/1.1837395")
+        assert res.get("oa_fallback_error"), "同域 OA 必须说明原因"
+        assert "bronze" in res["oa_fallback_error"]
+
+    def test_no_oa_version_reported_honestly(self, monkeypatch):
+        """没有合法 OA 版本时如实说明，不编造链接。"""
+        oa = {"is_oa": False, "oa_status": "closed", "oa_url": ""}
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall",
+                            lambda doi, timeout=15.0: dict(oa))
+        res = wf.FetchResult(ok=False, url="https://x.org/a")
+        wf._try_oa_fallback(res, "10.1/x")
+        assert res.get("oa_fallback_error")
+        assert "没有合法开放获取版本" in res["oa_fallback_error"]
+        assert not res.get("text")
+
+    def test_unpaywall_exception_is_contained(self, monkeypatch):
+        def boom(doi, timeout=15.0):
+            raise RuntimeError("未配置 UNPAYWALL_EMAIL")
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall", boom)
+        res = wf.FetchResult(ok=False, url="https://x.org/a")
+        wf._try_oa_fallback(res, "10.1/x")     # 不应抛出
+        assert "Unpaywall 查询失败" in res.get("oa_fallback_error", "")
+
+    def test_fallback_respects_blocked_list(self, monkeypatch):
+        """OA 目标域名若本身在禁止名单里，也不能抓。"""
+        oa = {"is_oa": True, "oa_status": "green",
+              "oa_url": "https://some.cnki.net/paper.pdf"}
+        monkeypatch.setattr("matlens_kit.rag.scholarly.fetch_unpaywall",
+                            lambda doi, timeout=15.0: dict(oa))
+        res = wf.FetchResult(ok=False, url="https://x.org/a")
+        wf._try_oa_fallback(res, "10.1/x")
+        # 递归 fetch 内部会再做禁止名单检查；此处至少不应声称成功
+        assert not res.get("resolved_via")
