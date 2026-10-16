@@ -824,8 +824,122 @@ def extract_meta(html: str) -> Dict[str, Any]:
 # ────────────────────────────────────────────────────────────
 # 主入口：抓单个 URL
 # ────────────────────────────────────────────────────────────
+def _host_of(url: str) -> str:
+    """取 URL 的 host（去端口，小写）。用于「是否换了站点」判断。"""
+    try:
+        return (urllib.parse.urlsplit(url or "").netloc or "").split(":")[0].lower()
+    except Exception:
+        return ""
+
+
+def _doi_from_url(url: str) -> str:
+    """从 URL 里抠出 DOI（403/无正文时的 OA 降级入口）。
+
+    覆盖出版商常见形态：
+      https://doi.org/10.1149/1.1837395
+      https://iopscience.iop.org/article/10.1149/1.1837395
+      https://www.nature.com/articles/s41560-023-01321-7  → 10.1038/s41560-023-01321-7
+    Nature/Cell 这类用 sXXXX 编号，需配前缀映射；无法确定前缀时返回空串
+    （宁可不降级，也别用错误 DOI 查到错误文献）。
+    """
+    try:
+        u = url or ""
+    except Exception:
+        return ""
+    m = re.search(r"10\.\d{4,9}/[^\s\"'<>?&]+", u, re.I)
+    if m:
+        return m.group(0).rstrip(".,;)")
+    m = re.search(r"/articles/([a-z]?\d{4,5}(?:-\d{1,5}){2,3})", u, re.I)
+    if m:
+        return "10.1038/" + m.group(1)
+    return ""
+
+
+def _try_oa_fallback(res: FetchResult, doi: str) -> None:
+    """抓不到正文时，按 DOI 找合法开放获取版本并重试一次。
+
+    为什么需要（实测数据支撑）：
+    - IOP（iopscience.iop.org）整站 302 跳 ``validate.perfdrive.com`` 反爬页，
+      **连 doi.org 跳转也一样**，正文永远抽不到。
+    - 但 Unpaywall 实测能给出 arXiv 预印本：``10.1039/C4CP00856A`` →
+      ``https://arxiv.org/pdf/1404.3036``，正文 1621 字可用。
+
+    ⚠️ 两个诚实的边界：
+    1. 只用**合法** OA 版本（作者自存/机构知识库/预印本），不碰付费墙。
+    2. Unpaywall 返回的 bronze 版本可能仍在出版商域名上（实测 IOP 那条就是），
+       此时重试仍会失败 —— **如实报告**，不假装成功。
+    """
+    if not doi:
+        return
+    try:
+        from matlens_kit.rag.scholarly import fetch_unpaywall
+    except Exception:
+        return
+    try:
+        oa = fetch_unpaywall(doi, timeout=15.0)
+    except Exception as e:  # noqa: BLE001
+        res["oa_fallback_error"] = f"Unpaywall 查询失败：{type(e).__name__}"[:120]
+        return
+
+    res["oa_fallback"] = {
+        "is_oa": oa.get("is_oa"),
+        "status": oa.get("oa_status", ""),
+        "tried_url": _mask_url(oa.get("oa_url") or ""),
+    }
+    if not oa.get("is_oa") or not oa.get("oa_url"):
+        res["oa_fallback_error"] = "该文献没有合法开放获取版本（closed/bronze 不含可直取全文）"
+        return
+
+    # 别在同一个被封的域上重试 —— bronze 版常仍指向出版商自身，换路径也没用。
+    # 注意比**域名**而非完整 URL：Unpaywall 常给同域的 /pdf 后缀链接，
+    # 若按完整 URL 比较会误判为「换了目标」而白跑一次（实测 IOP 即如此，
+    # 会真的去请求那个被 robots 禁止的域）。
+    original = _host_of(res.get("url") or "")
+    target = oa["oa_url"]
+    if original and original == _host_of(target):
+        res["oa_fallback_error"] = (
+            f"Unpaywall 给的是 {oa.get('oa_status')} 版本，但仍在原站点"
+            f"（{oa.get('oa_status')} 通常意味着只开放阅读、不提供可直取全文），"
+            "换域名才有意义")
+        return
+
+    # 真正重试一次
+    try:
+        status, ctype, _body = _http_get(target, timeout=DEFAULT_TIMEOUT,
+                                         accept="application/pdf,text/html,*/*")
+    except Exception as e:  # noqa: BLE001
+        res["oa_fallback_error"] = f"OA 版本抓取失败：{type(e).__name__}"[:120]
+        return
+
+    res2: Dict[str, Any] = {}
+    if "pdf" in (ctype or "") or target.lower().endswith(".pdf"):
+        res2 = _handle_pdf(target, timeout=DEFAULT_TIMEOUT)
+    else:
+        r2 = fetch(target, with_text=True, timeout=DEFAULT_TIMEOUT,
+                   oa_fallback=False)   # 只降级一层，避免无限递归
+        res2 = dict(r2)
+        if res2.get("ok"):
+            res2["status"] = r2.get("status", status)
+    if res2.get("text"):
+        res["ok"] = True
+        res["status"] = res2.get("status", 200)
+        res["content_type"] = res2.get("content_type", "")
+        res["text"] = res2.get("text")
+        res["text_chars"] = res2.get("text_chars", len(res2.get("text", "")))
+        res["engine"] = "oa-fallback:" + str(res2.get("engine", ""))
+        res["resolved_via"] = "Unpaywall OA 版本"
+        res.pop("notes", None)
+        res.pop("oa_fallback_error", None)
+        # 元数据仍以原页面为准，只补 PDF 直链
+        if res2.get("pdf_url") and not res.get("pdf_url"):
+            res["pdf_url"] = res2["pdf_url"]
+    else:
+        res["oa_fallback_error"] = "OA 版本同样抓不到正文（可能仍需浏览器或已下架）"
+
+
 def fetch(url: str, with_text: bool = True, timeout: float = DEFAULT_TIMEOUT,
-          check_robots: bool = True, check_blocked: bool = True) -> FetchResult:
+          check_robots: bool = True, check_blocked: bool = True,
+          oa_fallback: bool = True) -> FetchResult:
     """抓取单个 URL，返回结构化结果。
 
     返回::
@@ -872,6 +986,23 @@ def fetch(url: str, with_text: bool = True, timeout: float = DEFAULT_TIMEOUT,
         res["robots"] = why
         if not allowed:
             res["reason"] = why
+            # 2026-10-16：robots 拒绝时，仍尝试一次 Unpaywall OA 降级。
+            # 这**不是绕过 robots** —— 我们不再请求该站点，而是转向作者自存的
+            # 合法开放版本（通常在 arXiv / 机构知识库）。这些目标域各自的
+            # robots 会在递归 fetch 里正常接受检查。
+            # 关闭名单（上一段）**不**走这条路：那是服务条款层面的禁止，
+            # 连找替代版都不合适。
+            if oa_fallback:
+                doi0 = _doi_from_url(url)
+                if doi0:
+                    _try_oa_fallback(res, doi0)
+                    if res.get("text"):
+                        res["ok"] = True
+                        res["elapsed_ms"] = int((time.time() - t0) * 1000)
+                        res["note_policy"] = (
+                            "原站点 robots 禁止抓取，已改用 Unpaywall 解析到的"
+                            "合法开放获取版本（作者自存 / 预印本）")
+                        return res
             res["elapsed_ms"] = int((time.time() - t0) * 1000)
             res["note_policy"] = "MatLens 遵守 robots.txt，不抓取被禁止的路径"
             return res
@@ -901,6 +1032,11 @@ def fetch(url: str, with_text: bool = True, timeout: float = DEFAULT_TIMEOUT,
         if e.code in (401, 403):
             res["reason"] = f"HTTP {e.code}：站点拒绝访问（可能需要机构订阅或触发反爬）"
             res["note_policy"] = "MatLens 不绕过访问控制；请通过机构订阅或开放获取渠道获取"
+            # 2026-10-16：URL 里若含 DOI，尝试 Unpaywall 找合法 OA 版本
+            if oa_fallback:
+                doi = _doi_from_url(url)
+                if doi:
+                    _try_oa_fallback(res, doi)
         return res
     except urllib.error.URLError as e:
         res["reason"] = f"网络错误：{e.reason}"
@@ -934,6 +1070,12 @@ def fetch(url: str, with_text: bool = True, timeout: float = DEFAULT_TIMEOUT,
     if not text:
         res["notes"] = (res.get("notes") or []) + [
             "未抽取出正文：可能页面为纯 JS 渲染（需 crawl4ai）或正文在付费墙后"]
+        # 2026-10-16：空正文时也走一次 OA 降级 —— 出版商页面常见「标题能读、
+        # 正文被挡」，此时 DOI 往往就在页面里（已由 extract_meta 抓到）。
+        if oa_fallback:
+            doi = res.get("doi") or _doi_from_url(url)
+            if doi:
+                _try_oa_fallback(res, doi)
     res["elapsed_ms"] = int((time.time() - t0) * 1000)
     return res
 
