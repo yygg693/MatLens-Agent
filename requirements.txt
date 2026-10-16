@@ -1,0 +1,68 @@
+# ══════════════════════════════════════════════════════════
+# MatLens 材料之镜 · 依赖清单（Python >= 3.11, < 3.14）
+# 继承 Hermes Agent 核心（MIT 上游，精确锁版防供应链攻击）
+# ══════════════════════════════════════════════════════════
+
+# ── 核心（MatLens / Hermes 继承） ──
+openai==2.24.0
+certifi==2026.5.20
+python-dotenv==1.2.2
+fire==0.7.1
+httpx[socks]==0.28.1
+rich==14.3.3
+tenacity==9.1.4
+pyyaml==6.0.3
+ruamel.yaml==0.18.17
+requests==2.33.0
+jinja2==3.1.6
+pydantic==2.13.4
+prompt_toolkit==3.0.52
+croniter==6.0.0
+packaging==26.0
+Markdown==3.10.2
+PyJWT[crypto]==2.13.0
+urllib3>=2.7.0,<3
+cryptography==50.0.0
+tzdata==2025.3; sys_platform == 'win32'
+psutil==7.2.2
+websockets==15.0.1
+pathspec==1.1.1
+fastapi>=0.104.0,<1
+uvicorn[standard]>=0.24.0,<1
+python-multipart>=0.0.9,<1
+ptyprocess>=0.7.0,<1; sys_platform != 'win32'
+pywinpty>=2.0.0,<3; sys_platform == 'win32'
+pywin32>=306,<312; sys_platform == 'win32'
+Pillow==12.3.0
+concurrent-log-handler==0.9.29; sys_platform == 'win32'
+nemo-relay>=0.7.1,<0.8; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')
+
+# ── MatLens 材料领域（P1 垂直能力） ──
+pdfplumber==0.11.4         # PDF 文献抽取（RAG 导入）
+
+# ── MatLens 本地知识库 RAG（P1） ──
+faiss-cpu==1.9.0           # 本地向量库
+numpy==2.2.0               # 向量运算
+
+# ── MatLens 记忆图谱 / LLM 抽取（P1） ──
+# litellm 1.60 强制 httpx<0.28 会破坏核心 httpx==0.28.1，故用 1.98.0（兼容 0.28）
+litellm==1.98.0            # 记忆→知识图谱 LLM 实体/关系抽取（graph_api）
+mem0ai>=2.0,<3             # 记忆 SDK（OSS 模式，chroma+fastembed）
+chromadb>=1.0,<2           # 记忆向量存储
+fastembed>=0.9,<1          # 本地 embedding 模型（bge-small-zh，首次自动下载）
+
+# ── MatLens 材料工具包（S3） ──
+scikit-learn>=1.5,<2       # il_viscosity_predict GBDT 模型
+matplotlib>=3.9,<4         # 材料绘图（base64 返回前端）
+pandas>=2.2,<3
+scipy>=1.14,<2
+python-docx>=1.1,<2        # 论文 Word 导出（GB/T 7714）
+impedance>=1.7,<2         # 论文工坊 EIS 专业绘图（Nyquist/Bode + 等效电路拟合）
+                           # 可选：缺失时 fig_eis 自动降级为散点图，不影响出图
+
+# ── MatLens Web 界面（P2，Gradio） ──
+gradio==4.44.1             # 本地 Web 界面（零前端构建链）
+
+# ── 测试 ──
+pytest==8.3.4
+pytest-asyncio==0.25.0

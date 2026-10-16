@@ -1,0 +1,4 @@
+[console_scripts]
+matlens = matlens_cli.main:main
+matlens-acp = acp_adapter.entry:main
+matlens-agent = run_agent:main

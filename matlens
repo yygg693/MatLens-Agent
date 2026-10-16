@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""
+MatLens Agent CLI launcher.
+
+This wrapper should behave like the installed `matlens` command, including
+subcommands such as `gateway`, `cron`, and `doctor`.
+
+用户数据目录统一为 ~/.matlens/（跨平台一致），在导入任何核心模块前固化。
+"""
+
+import os
+import sys
+
+# 数据目录统一 ~/.matlens（Linux/macOS 默认；Windows 覆盖平台默认的 AppData\Local\matlens）
+if "MATLENS_HOME" not in os.environ:
+    os.environ["MATLENS_HOME"] = os.path.join(os.path.expanduser("~"), ".matlens")
+
+if __name__ == "__main__":
+    from matlens_cli.main import main
+
+    main()

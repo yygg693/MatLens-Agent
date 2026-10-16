@@ -1,0 +1,193 @@
+{
+  "topic": "固态氧化物燃料电池 电解质 GDC 中温固体氧化物燃料电池",
+  "count": 16,
+  "queries": [
+    "固态氧化物燃料电池 电解质 GDC 中温固体氧化物燃料电池",
+    "GDC electrolyte single cell OCV power density open circuit",
+    "electrochemical impedance spectroscopy distribution relaxation times DRT solid oxide electrolyte",
+    "Hebb-Wagner method electronic conductivity ceria blocking electrode",
+    "grain boundary space charge layer ceria ionic conductivity",
+    "Ca doped GDC ceria electrolyte conductivity",
+    "alkaline earth doped ceria SOFC electrolyte",
+    "Co sintering aid grain boundary conductivity GDC ceria",
+    "LSCF GDC cathode interface reaction SOFC co-firing",
+    "distribution of relaxation times regularization impedance deconvolution"
+  ],
+  "meth_queries": [
+    "GDC electrolyte single cell OCV power density open circuit",
+    "electrochemical impedance spectroscopy distribution relaxation times DRT solid oxide electrolyte",
+    "Hebb-Wagner method electronic conductivity ceria blocking electrode",
+    "grain boundary space charge layer ceria ionic conductivity",
+    "Ca doped GDC ceria electrolyte conductivity",
+    "alkaline earth doped ceria SOFC electrolyte",
+    "Co sintering aid grain boundary conductivity GDC ceria",
+    "LSCF GDC cathode interface reaction SOFC co-firing",
+    "distribution of relaxation times regularization impedance deconvolution"
+  ],
+  "channels": {
+    "local": false,
+    "openalex": true,
+    "crossref": true
+  },
+  "latency_s": 50.0,
+  "local_count": 0,
+  "oa_count": 35,
+  "buckets_by_method": {
+    "topic": 7,
+    "GDC_SINGLE_CELL": 1,
+    "EIS_DRT": 1,
+    "HEBB_WAGNER": 1,
+    "SPACE_CHARGE": 1,
+    "CA_DOPED_GDC": 1,
+    "ALKALINE_DOPED_CERIA": 1,
+    "CO_SINTERING_AID_GB": 1,
+    "LSCF_GDC_INTERFACE": 1,
+    "DRT_REGULARIZATION": 1
+  },
+  "refs": [
+    {
+      "index": 1,
+      "title": "Improvement of Open Circuit Voltage (OCV) depending on Thickness of GDC Electrolyte of LT-SOFCs",
+      "authors": "Hyun-Jun Ko, Jong-Jin Lee, Sang-Hoon Hyun",
+      "year": "2010",
+      "source": "Crossref·Journal of the Korean Ceramic Society",
+      "doi": "https://doi.org/10.4191/kcers.2010.47.2.195",
+      "meth": "GDC_SINGLE_CELL"
+    },
+    {
+      "index": 2,
+      "title": "Electrochemical Impedance Analysis of SOFC with Transmission Line Model Using Distribution of Relaxation Times (DRT)",
+      "authors": "Jaewoon Hong, Aman Bhardwaj, Hohan Bae, In Ho Kim",
+      "year": "2020",
+      "source": "OpenAlex·Journal of The Electrochemical Society",
+      "doi": "https://doi.org/10.1149/1945-7111/aba00f",
+      "meth": "EIS_DRT"
+    },
+    {
+      "index": 3,
+      "title": "Electronic conductivity measurement of gadolinia doped ceria by DC-partial-polarization",
+      "authors": "J. Liu, W. Weppner",
+      "year": "1999",
+      "source": "OpenAlex·Ionics",
+      "doi": "https://doi.org/10.1007/bf02375914",
+      "meth": "HEBB_WAGNER"
+    },
+    {
+      "index": 4,
+      "title": "Ionic conductivity of space charge layers in acceptor doped ceria",
+      "authors": "Dries Van Laethem, Johan Deconinck, Annick Hubin",
+      "year": "2018",
+      "source": "OpenAlex·Journal of the European Ceramic Society",
+      "doi": "https://doi.org/10.1016/j.jeurceramsoc.2018.08.046",
+      "meth": "SPACE_CHARGE"
+    },
+    {
+      "index": 5,
+      "title": "Pengaruh Penambahan Nd2O3 dan Fe2O3 Pada Sistem Elektrolit Padat Gadolinia Doped Ceria (GDC) Untuk Aplikasi Sel Bahan Bakar Oksida Padat Suhu Menengah [Effect of Nd2O3 and Fe2O3 Addition on Gadolinia Doped Ceria (GDC) Solid Electrolyte System For IT-SOFC]",
+      "authors": "Muhammad Faisal Akbar, Bonita Dilasari, Syoni Soepriyanto, Dadan Suhendar",
+      "year": "2022",
+      "source": "Crossref·Metalurgi",
+      "doi": "https://doi.org/10.14203/metalurgi.v37i2.641",
+      "meth": "CA_DOPED_GDC"
+    },
+    {
+      "index": 6,
+      "title": "Gd0.05Bi0.15M0.05Ce0.75O2 solid solutions for IT-SOFC electrolyte application",
+      "authors": "Igor V. Zagaynov, Sergey V. Fedorov",
+      "year": "2019",
+      "source": "OpenAlex·Letters on Materials",
+      "doi": "https://doi.org/10.22226/2410-3535-2019-4-424-427",
+      "meth": "ALKALINE_DOPED_CERIA"
+    },
+    {
+      "index": 7,
+      "title": "Electrical properties of gadolinia doped ceria electrolytes fabricated by infiltration aided sintering",
+      "authors": "Can Sındıraç, Aligül Büyükaksoy, Sedat Akkurt",
+      "year": "2019",
+      "source": "OpenAlex·Solid State Ionics",
+      "doi": "https://doi.org/10.1016/j.ssi.2019.115020",
+      "meth": "CO_SINTERING_AID_GB"
+    },
+    {
+      "index": 8,
+      "title": "Improvement of IT-SOFC by tailoring the microstructure of LSCF cathode and GDC electrolyte",
+      "authors": "Can Sındıraç",
+      "year": "2019",
+      "source": "OpenAlex",
+      "doi": "",
+      "meth": "LSCF_GDC_INTERFACE"
+    },
+    {
+      "index": 9,
+      "title": "Bayesian and Hierarchical Bayesian Based Regularization for Deconvolving the Distribution of Relaxation Times from Electrochemical Impedance Spectroscopy Data",
+      "authors": "Mohammed B. Effat, Francesco Ciucci",
+      "year": "2017",
+      "source": "OpenAlex·Electrochimica Acta",
+      "doi": "https://doi.org/10.1016/j.electacta.2017.07.050",
+      "meth": "DRT_REGULARIZATION"
+    },
+    {
+      "index": 10,
+      "title": "Performance of the Composite Cathode Ba0.5Sr0.5Co0.8Fe0.2O3-δ-Ce0.9Gd0.1O2-δ for Medium-low Temperature Solid Oxide Fuel Cell",
+      "authors": "Luo Linghong, HU Jia-Xing, Cheng Liang, Xu Xu",
+      "year": "2018",
+      "source": "OpenAlex·Journal of Inorganic Materials",
+      "doi": "https://doi.org/10.15541/jim20170232",
+      "meth": ""
+    },
+    {
+      "index": 11,
+      "title": "Research progress on high-entropy oxides as cathodes for solid oxide cells",
+      "authors": "Chuangang Yao, Zhe Zhang, Haixia Zhang, Miaomiao Di",
+      "year": "2025",
+      "source": "OpenAlex·Scientia Sinica Chimica",
+      "doi": "https://doi.org/10.1360/ssc-2025-0102",
+      "meth": ""
+    },
+    {
+      "index": 12,
+      "title": "Pr1+xBa1-xFe2O5+δ Cathode Materials for Solid Oxide Fuel Cells: Preparation and Electrochemical Performance",
+      "authors": "Ke Xue, Changkun CAI, Manyi XIE, Shuting Li",
+      "year": "2024",
+      "source": "OpenAlex·Journal of Inorganic Materials",
+      "doi": "https://doi.org/10.15541/jim20240404",
+      "meth": ""
+    },
+    {
+      "index": 13,
+      "title": "Electrolytic CO 2 Performance of La 0.3 Sr 0.6 Ti 1- x Ni x O 3- δ -based Fiber Fuel Electrode for Solid Oxide Electrolysis Cell",
+      "authors": "Hongbin Wang, Leying WANG, Linghong LUO, Liang Cheng",
+      "year": "2025",
+      "source": "OpenAlex·Journal of Inorganic Materials",
+      "doi": "https://doi.org/10.15541/jim20250056",
+      "meth": ""
+    },
+    {
+      "index": 14,
+      "title": "Improved Performance of Symmetrical Solid Oxide Fuel Cells with Redox-reversible Pr$lt;inf$gt;0.6$lt;/inf$gt;Sr$lt;inf$gt;0.4$lt;/inf$gt;Co$lt;inf$gt;0.2$lt;/inf$gt;Fe$lt;inf$gt;0.8$lt;/inf$gt;O$lt;inf$gt;3-delta$lt;/inf$gt; Electrodes",
+      "authors": "Yang Yang, TIAN Dong, DING Yan-Zhi, Xiaoyong Lu",
+      "year": "2017",
+      "source": "OpenAlex·Journal of Inorganic Materials",
+      "doi": "https://doi.org/10.15541/jim20160340",
+      "meth": ""
+    },
+    {
+      "index": 15,
+      "title": "Composite Anodes with Ni Impregnated LST-SSZ for Direct Methane Solid Oxide Fuel Cells",
+      "authors": "LIU Ya-Di, Chun Xue Yuan, ZHOU Yu-Cun, ZOU Jie",
+      "year": "2014",
+      "source": "OpenAlex·Journal of Inorganic Materials",
+      "doi": "https://doi.org/10.15541/jim20140083",
+      "meth": ""
+    },
+    {
+      "index": 16,
+      "title": "Iron-based Perovskite Material La 0.25 M 0.75 FeO 3- δ (M=Ca, Sr, Ba): Preparation and Performance as Cathode for Solid Oxide Fuel Cells",
+      "authors": "Hengqiang YANG, Xinyue ZHANG, Yichu MA, Qingjun ZHOU",
+      "year": "2025",
+      "source": "OpenAlex·Journal of Inorganic Materials",
+      "doi": "https://doi.org/10.15541/jim20240500",
+      "meth": ""
+    }
+  ]
+}
