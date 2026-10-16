@@ -4,6 +4,10 @@
 封装 matlens_kit.rag.kb.KnowledgeManager / KnowledgeBase（多知识库，
 ~/.matlens/knowledge/，FAISS + 嵌入复用主 provider）。前端知识库页依赖此层：
 
+**题录导入（2026-10-16 新增）——中文文献唯一合规入口**
+- POST   /api/kb/{name}/import-citations  导入 RIS/BibTeX/EndNote/RefWorks 题录
+- POST   /api/kb/citations/preview       仅解析不落库（先看清解析对不对）
+
 **本地**
 - GET    /api/kb                      列表（含每个库 stats + 当前激活）
 - POST   /api/kb                      新建 {name}
@@ -476,6 +480,136 @@ def _load_docs(kb) -> List[Dict[str, Any]]:
         return data if isinstance(data, list) else []
     except (OSError, ValueError):
         return []
+
+
+@_router.post("/{name}/import-citations")
+def import_citations(name: str, payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """导入题录文件（RIS / BibTeX / EndNote / RefWorks）。
+
+    这是**中文文献唯一合规入口**：知网无公开 API（见 docs/kb_cloud_sources_research.md），
+    官网人工检索 → 导出题录 → 在此导入。
+
+    只解析题录元数据（题名/作者/出处/年份/DOI/关键词），**不含正文**；
+    正文需用户自行下载 PDF 上传，或对有 DOI 的条目走 Unpaywall OA 降级链。
+    """
+    from matlens_kit.rag import bibtex as bib
+
+    payload = payload or {}
+    mgr = _get_manager()
+    if name not in mgr.list_kbs():
+        raise HTTPException(status_code=404, detail=f"知识库 {name} 不存在")
+    kb = mgr.get(name)
+
+    items: List[Dict[str, Any]] = []
+    source_names: List[str] = []
+    # 1) 本地路径导入（用户在知网导出的文件）
+    for p in (payload.get("paths") or []):
+        path = str(p).strip()
+        if not path:
+            continue
+        if not os.path.exists(path):
+            raise HTTPException(status_code=400, detail=f"文件不存在：{path}")
+        r = bib.parse_bibliography_file(path)
+        if not r.get("ok") and r.get("errors"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{os.path.basename(path)} 解析失败：" + "；".join(r["errors"])[:200])
+        items.extend(r.get("items") or [])
+        source_names.append(r.get("source_file") or os.path.basename(path))
+
+    # 2) 直接传文本（前端粘贴 / 拖入 txt）
+    text = (payload.get("text") or "").strip()
+    fmt = "file"
+    if text:
+        r = bib.parse_bibliography(text, payload.get("filename") or "")
+        fmt = r.get("format", "unknown")
+        items.extend(r.get("items") or [])
+
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail="未解析出任何题录。支持 RIS / BibTeX / EndNote(.enw) / RefWorks(.txt)；"
+                   "请确认文件是从知网 / 万方 / PubMed 正常导出的题录（含 %T 或 TI 标题行）")
+
+    # 去重：同 DOI 只留一条；无 DOI 则按标题
+    uniq: List[Dict[str, Any]] = []
+    seen = set()
+    for it in items:
+        key = (it.get("doi") or "").strip().lower() or (it.get("title") or "").strip()[:80]
+        if key and key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+
+    # 落盘为 Markdown 便于追溯
+    from matlens_cli.config import get_matlens_home
+
+    out_dir = get_matlens_home() / "uploads" / "citations" / time.strftime("%Y%m%d")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    paths: List[str] = []
+    n = 0
+    for it in uniq:
+        title = (it.get("title") or "").strip()
+        if not title:
+            continue
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title).strip()
+        safe = re.sub(r"\s+", " ", safe)[:56].rstrip(". ") or "untitled"
+        try:
+            p = out_dir / f"{n + 1:02d}_{safe}.md"
+            p.write_text(bib.to_markdown([it]), encoding="utf-8")
+        except OSError:
+            continue
+        paths.append(str(p))
+        n += 1
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="题录缺少题名，无法写入")
+
+    try:
+        add = kb.add_documents(paths)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"索引写入失败：{e}")
+
+    return {
+        "ok": True, "name": name, "format": fmt,
+        "parsed": len(items), "imported": n,
+        "duplicates": len(items) - len(uniq),
+        "sources": source_names,
+        "note": "已导入题录（元数据）。正文需另行下载 PDF 上传，"
+                "或对有 DOI 的条目点「找 OA 全文」自动获取开放版本。",
+        **add,
+    }
+
+
+@_router.post("/citations/preview")
+def preview_citations(payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """解析题录但不落库 —— 让用户先看清解析对不对，再决定是否导入。
+
+    ⚠️ 必须注册在 ``/{name}/…`` 之前，否则会被当作库名匹配。
+    """
+    from matlens_kit.rag import bibtex as bib
+
+    payload = payload or {}
+    text = (payload.get("text") or "").strip()
+    if text:
+        r = bib.parse_bibliography(text, payload.get("filename") or "")
+    else:
+        path = (payload.get("path") or "").strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="需要 text 或 path")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=400, detail=f"文件不存在：{path}")
+        r = bib.parse_bibliography_file(path)
+    # 预览截断摘要，避免响应过大
+    out = []
+    for it in (r.get("items") or [])[:200]:
+        x = dict(it)
+        if x.get("abstract"):
+            x["abstract"] = str(x["abstract"])[:300]
+        out.append(x)
+    r["items"] = out
+    return r
 
 
 @_router.post("/{name}/import")
