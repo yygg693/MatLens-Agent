@@ -262,6 +262,30 @@ def _make_agent_runner(pid: str, cancel_key: Optional[str] = None):
             cb("stream_text", {"text": f"✓ 检索完成：本地 {res.get('local_count', 0)} 条 + 网络 {res.get('count', 0)} 条（去重后 {res.get('count', 0)} 条核验文献）\n\n"})
             cb("stream_text", {"text": render_refs(refs) + "\n\n"})
 
+            # ── 2026-10-16：补抓正文 ──
+            # 检索只拿到题录（题名/作者/DOI），写作时需要的是原文 ——
+            # 只有题录时 LLM 只能编。这里对前几篇补抓正文（本地库优先，
+            # 其次 OA 链接，最后 Unpaywall 按 DOI 解析），拿不到的如实留空。
+            fulltext_block = ""
+            try:
+                from matlens_kit.paper.search_enrich import enrich_refs, render_fulltext_notes
+
+                cb("stream_text", {"text": "📄 抓取文献正文（本地库 → 开放获取 → Unpaywall 解析）…\n"})
+                en = enrich_refs(refs, max_refs=6)
+                refs = en.get("refs", refs)
+                fulltext_block = render_fulltext_notes(refs)
+                cb("stream_text", {
+                    "text": (f"✓ 正文抓取：{en.get('with_text', 0)}/{en.get('with_text', 0) + en.get('without_text', 0)} "
+                             f"篇拿到原文（{en.get('elapsed_s', 0)}s）\n\n")
+                })
+                if not fulltext_block:
+                    cb("stream_text", {
+                        "text": "⚠️ 未取到任何正文（多为出版商付费墙 / 无合法开放版本）。"
+                                "本次文献总览仅基于题录，引用前请自行核实。\n\n"
+                    })
+            except Exception as e:  # noqa: BLE001
+                cb("stream_text", {"text": f"⚠️ 正文抓取跳过：{type(e).__name__}\n\n"})
+
             # LLM 生成文献总览（基于白名单）—— 独立会话级 agent，避免与其他对话/论文并发踩踏
             paper_sid = f"paper_{pid_[:12]}"
             agent = _ga(session_id=paper_sid, model="deepseek-chat", provider="deepseek")
@@ -279,10 +303,20 @@ def _make_agent_runner(pid: str, cancel_key: Optional[str] = None):
                         pass
                 _threading.Thread(target=_watch_cancel, daemon=True, name=f"paper-cancel-{paper_sid[:8]}").start()
             _papers = _papers_settings()
+            # 2026-10-16：把抓到的原文片段一并给 LLM。
+            # 只有题录时模型会「凭印象补全」别人的结论 —— 那是最危险的引用污染，
+            # 所以有正文才给；没有就明确告诉它只能基于题录。
+            refs_payload = refs_text(refs)
+            if fulltext_block:
+                refs_payload = refs_payload + "\n\n" + fulltext_block
+            else:
+                refs_payload += ("\n\n⚠️ 本次未取到任何文献正文（多为出版商付费墙或无合法开放版本）。"
+                                 "请仅基于题录给出概览，**不要推测文献的具体结论或数据**；"
+                                 "需要引用具体结论时，请提示用户补充 PDF。")
             prompt = render_prompt("search", {
                 "topic": topic,
                 "paper_type": PAPER_TYPES.get(p.get("paper_type", "research"), "研究论文"),
-                "refs_text": refs_text(refs),
+                "refs_text": refs_payload,
                 "tone": _papers.get("tone", "formal"),
                 "cite_style": _papers.get("cite_style", "gb7714"),
             })
