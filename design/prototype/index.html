@@ -2488,6 +2488,20 @@ input,textarea,select{font-family:inherit;font-size:13px}
 
               <div class="np-sec">明令禁止抓取的站点</div>
               <div class="np-note" id="np-blocked-list">读取中…</div>
+
+              <!-- 抓取缓存统计（2026-10-29）：此前缓存「用不用得上」用户完全看不到 -->
+              <div class="np-sec">抓取缓存</div>
+              <div class="np-note" id="np-cache-stats">读取中…</div>
+              <div class="stng-row" style="margin-top:8px">
+                <div>
+                  <div class="sr-label">清理过期缓存</div>
+                  <div class="sr-desc" id="np-cache-hint">只删已过期的缓存条目，不影响知识库与已导入文献</div>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn btn-ghost btn-sm" id="np-cache-purge">清理过期条目</button>
+                  <button class="btn btn-ghost btn-sm" id="np-cache-refresh">刷新统计</button>
+                </div>
+              </div>
             </div>
             <!-- 论文工坊 tab -->
             <div class="stng-pane" data-pane="papers">
