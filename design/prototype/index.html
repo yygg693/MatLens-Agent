@@ -947,6 +947,36 @@ input,textarea,select{font-family:inherit;font-size:13px}
 .kb-src-dot.ok{background:var(--ml-ok)}
 .kb-src-dot.bad{background:var(--ml-danger)}
 .kb-src-dot.wait{background:var(--ml-warn);animation:thinkingPulse 1.1s ease-in-out infinite}
+/* 源健康自检（2026-10-29）—— 四档状态 + 主动可见 */
+.kb-src-dot.degraded{background:var(--ml-warn)}
+.kb-src-dot.need_key{background:var(--ml-text-faint)}
+.kb-src-dot.off{background:transparent;border:1px solid var(--ml-text-faint)}
+.kb-src-dot.off{width:7px;height:7px}
+.kb-health{margin:10px 0 12px;padding:11px 13px;border-radius:11px;
+  background:var(--ml-card-deep);border:1px solid var(--ml-card-border)}
+.kb-health-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.kb-health-head b{font-size:11.5px;font-weight:700;color:var(--ml-text)}
+.kb-health-sum{display:flex;gap:6px;flex-wrap:wrap;flex:none}
+.kb-hs{font-size:10px;padding:2px 7px;border-radius:7px;border:1px solid var(--ml-card-border);
+  color:var(--ml-text-faint);white-space:nowrap}
+.kb-hs.ok{color:var(--ml-ok);border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.08)}
+.kb-hs.degraded{color:var(--ml-warn);border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.08)}
+.kb-hs.down{color:var(--ml-danger);border-color:rgba(248,113,113,.3);background:rgba(248,113,113,.08)}
+.kb-hs.need_key{color:var(--ml-text-faint)}
+.kb-health-time{font-size:10px;color:var(--ml-text-faint);margin-left:auto}
+.kb-health-btn{background:none;border:1px solid var(--ml-card-border);border-radius:7px;
+  font-size:10px;padding:2px 8px;color:var(--ml-text-dim);cursor:pointer;white-space:nowrap}
+.kb-health-btn:hover{border-color:var(--ml-accent);color:var(--ml-sky)}
+.kb-health-btn:disabled{opacity:.5;cursor:default}
+.kb-health-list{display:flex;flex-direction:column;gap:4px}
+.kb-hl{display:flex;align-items:flex-start;gap:7px;font-size:10.5px;line-height:1.6;
+  padding:4px 6px;border-radius:6px}
+.kb-hl:hover{background:var(--ml-card)}
+.kb-hl-name{color:var(--ml-text-dim);white-space:nowrap;flex:none}
+.kb-hl-msg{color:var(--ml-text-faint);min-width:0;flex:1}
+.kb-hl-msg b{color:var(--ml-danger);font-weight:600}
+.kb-hl-msg .hl-warn{color:var(--ml-warn)}
+.kb-hl-ms{font-family:var(--mono);font-size:9.5px;color:var(--ml-text-faint);flex:none}
 
 /* 不可用源（知网等）—— 灰掉但**必须显式说明原因与替代路径**，
    不能悄悄不显示，否则用户以为功能漏做 */
@@ -1941,6 +1971,10 @@ input,textarea,select{font-family:inherit;font-size:13px}
                  此前 stats().dir 已在后端但前端从未展示，用户无法回答
                  「我的文献到底存哪了、占多大」。 -->
             <div class="kb-storeinfo" id="kb-storeinfo" style="display:none;margin-top:12px"></div>
+
+            <!-- 源健康面板（2026-10-29）：主动显示各源可用性。
+                 此前只能「用的时候才知道」源挂了，用户搜不到东西却不知道为什么少。 -->
+            <div class="kb-health" id="kb-health"></div>
           </div>
         </div>
         <!-- 文献精读抽屉 -->

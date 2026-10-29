@@ -72,6 +72,17 @@ def _fmt_size(n: Any) -> str:
     return f"{n:.1f} TB"
 
 
+#: 自检模式标志。为 True 时不重试 —— 自检要快速反馈，
+#: 重试会把 5s 超时翻倍（实测整体自检 25s，其中 HuggingFace 占 16.9s）。
+_PROBE_MODE = False
+
+
+def _set_probe_mode(on: bool) -> None:
+    """切换自检模式（免重试）。"""
+    global _PROBE_MODE
+    _PROBE_MODE = bool(on)
+
+
 def search_zenodo(query: str, limit: int = 8,
                   timeout: float = 15.0) -> List[Dict[str, Any]]:
     """Zenodo 数据集检索。
@@ -84,7 +95,8 @@ def search_zenodo(query: str, limit: int = 8,
     """
     url = ("https://zenodo.org/api/records?q=" + urllib.parse.quote(query)
            + f"&size={max(8, min(limit * 3, 50))}&sort=bestmatch&type=dataset")
-    d = _get_json(url, timeout=timeout, headers=_UA)
+    d = _get_json(url, timeout=timeout, headers=_UA,
+                  retries=0 if _PROBE_MODE else 1)
     hits = (d.get("hits") or {}).get("hits") or []
 
     out: List[Dict[str, Any]] = []
@@ -168,7 +180,8 @@ def search_huggingface(query: str, limit: int = 8,
     """
     url = ("https://huggingface.co/api/datasets?search="
            + urllib.parse.quote(query) + f"&limit={max(1, min(limit, 50))}")
-    d = _get_json(url, timeout=timeout, headers=_UA)
+    d = _get_json(url, timeout=timeout, headers=_UA,
+                  retries=0 if _PROBE_MODE else 1)
     out: List[Dict[str, Any]] = []
     for x in (d or [])[:limit]:
         did = x.get("id") or ""
@@ -301,7 +314,8 @@ def fetch_record_files(record_id: str, timeout: float = 15.0) -> Dict[str, Any]:
     是否下载应由用户显式决定。
     """
     url = f"https://zenodo.org/api/records/{urllib.parse.quote(str(record_id))}"
-    d = _get_json(url, timeout=timeout, headers=_UA)
+    d = _get_json(url, timeout=timeout, headers=_UA,
+                  retries=0 if _PROBE_MODE else 1)
     m = d.get("metadata") or {}
     files = []
     total = 0

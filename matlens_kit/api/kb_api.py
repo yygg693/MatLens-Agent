@@ -226,6 +226,38 @@ def resolve_oa(doi: str = Query(...)) -> Dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"OA 解析失败：{e}")
 
 
+# ────────────────────────────────────────────────────────────
+# 源健康自检（2026-10-29）
+#
+# 此前只能「用的时候才知道」某个源挂了 —— 用户勾了 5 个源去搜，
+# 结果少了一半却不知道为什么少。自检让状态**主动可见**。
+# ────────────────────────────────────────────────────────────
+@_router.get("/sources/health-all")
+def all_sources_health(force: bool = Query(False)) -> Dict[str, Any]:
+    """批量自检所有源（文献源 + 数据集源），结果缓存 10 分钟。
+
+    ``force=true`` 强制重新探测（用户点「立即检测」时用）。
+    """
+    from matlens_kit.rag import source_health
+
+    try:
+        return source_health.check_all(force=force)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"源自检失败：{str(e)[:160]}")
+
+
+@_router.post("/sources/health/refresh")
+def refresh_sources_health() -> Dict[str, Any]:
+    """强制刷新自检缓存（前端「立即检测」按钮）。"""
+    from matlens_kit.rag import source_health
+
+    source_health.invalidate()
+    try:
+        return source_health.check_all(force=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"源自检失败：{str(e)[:160]}")
+
+
 @_router.post("/web-search")
 def web_search(payload: Dict[str, Any] = None) -> Dict[str, Any]:
     """多源并发检索云端学术 API（不写入知识库，只返回结果）。
