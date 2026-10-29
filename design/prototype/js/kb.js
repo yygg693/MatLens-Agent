@@ -29,23 +29,32 @@ let _picked = new Set();        // 勾选待导入的文献 id
  * 一、模式切换
  * ══════════════════════════════════════════════════════════ */
 export function switchKbMode(mode) {
-  _kbMode = mode === 'cloud' ? 'cloud' : 'local';
+  _kbMode = mode === 'cloud' ? 'cloud' : (mode === 'dataset' ? 'dataset' : 'local');
   document.querySelectorAll('#page-kb .kb-mode').forEach(b =>
     b.classList.toggle('active', b.dataset.kbmode === _kbMode));
-  // 云端模式隐藏本地检索条与 tab（那套控件对云端无意义），反之亦然
+  // 云端/数据集模式隐藏本地检索条与 tab（那套控件对它们无意义），反之亦然
   const localBar = document.querySelector('#page-kb .kb-searchbar');
   const tabs = document.querySelector('#page-kb .kb-tabs');
   const panes = document.querySelectorAll('#page-kb .kb-tabpane');
   const cloud = $id('kb-cloud-pane');
+  const dsPane = $id('kb-dataset-pane');
   const store = $id('kb-storeinfo');
-  if (_kbMode === 'cloud') {
+  if (_kbMode === 'cloud' || _kbMode === 'dataset') {
     if (localBar) localBar.style.display = 'none';
     if (tabs) tabs.style.display = 'none';
     panes.forEach(p => { p.style.display = 'none'; });
-    if (cloud) cloud.style.display = '';
+    if (cloud) cloud.style.display = _kbMode === 'cloud' ? '' : 'none';
+    if (dsPane) dsPane.style.display = _kbMode === 'dataset' ? '' : 'none';
     if (store) store.style.display = 'none';
     _renderSrcList();
-    if (!$id('kb-web-results').innerHTML.trim()) _renderWebEmpty();
+    if (_kbMode === 'cloud') {
+      if (!$id('kb-web-results').innerHTML.trim()) _renderWebEmpty();
+    } else {
+      // 数据集模式：懒加载源目录，避免拖慢本地库首屏
+      import('./kb_dataset.js')
+        .then(m => { if (m.loadDatasetSources) m.loadDatasetSources(); })
+        .catch(() => {});
+    }
   } else {
     if (localBar) localBar.style.display = '';
     if (tabs) tabs.style.display = '';
@@ -53,6 +62,7 @@ export function switchKbMode(mode) {
     const cur = document.querySelector('#page-kb .kb-tabpane.active');
     panes.forEach(p => { p.style.display = (p === cur) ? '' : 'none'; });
     if (cloud) cloud.style.display = 'none';
+    if (dsPane) dsPane.style.display = 'none';
     renderStoreInfo();
   }
   loadKb();
@@ -67,23 +77,45 @@ export async function loadKb() {
   const nLocal = $id('km-local-n');
   const nCloud = $id('km-cloud-n');
 
-  // 云端模式下左栏展示源目录，本地库列表只影响计数徽标
-  if (_kbMode === 'cloud') {
-    _renderSrcList();
-    return;
-  }
+  // ⚠️ 云端/数据集模式下左栏展示**源目录**，但本地库数据仍要加载 ——
+  //    S.kb（当前库）与 doc-count（文献数）都依赖它。数据集导入后文献数会变，
+  //    不刷新用户看不到变化（实测踩过：导入后计数纹丝不动）。
+  const isRemote = (_kbMode === 'cloud' || _kbMode === 'dataset');
 
-  el.innerHTML = '<div style="padding:14px;color:var(--ml-text-faint);font-size:12px;text-align:center">加载中…</div>';
+  if (!isRemote) {
+    el.innerHTML = '<div style="padding:14px;color:var(--ml-text-faint);font-size:12px;text-align:center">加载中…</div>';
+  }
   let d = null;
   try { d = await jget('/api/kb'); } catch (e) { /* 静默 */ }
   if (!d || !d.kbs) {
-    el.innerHTML = '<div style="padding:14px;color:var(--ml-danger);font-size:12px;text-align:center">知识库加载失败</div>' +
-      '<div style="text-align:center"><button class="btn btn-ghost btn-sm" id="btn-kb-retry">重试</button></div>';
-    const rb = $id('btn-kb-retry'); if (rb) rb.onclick = () => loadKb();
+    if (!isRemote) {
+      el.innerHTML = '<div style="padding:14px;color:var(--ml-danger);font-size:12px;text-align:center">知识库加载失败</div>' +
+        '<div style="text-align:center"><button class="btn btn-ghost btn-sm" id="btn-kb-retry">重试</button></div>';
+      const rb = $id('btn-kb-retry'); if (rb) rb.onclick = () => loadKb();
+    }
     return;
   }
   if (nLocal) nLocal.textContent = d.kbs.length;
   _countCloud(d.kbs.length);
+  if (d.kbs.length) {
+    S.kb = (d.kbs.find(k => k.active) || d.kbs[0]);
+  }
+  if (isRemote) {
+    if (_kbMode === 'dataset') {
+      // 数据集模式的左栏要显示**数据集源**目录 —— 沿用云端模式的学术 API
+      // 目录会让用户在「数据集」标签下看到 OpenAlex/Crossref，完全是另一回事。
+      import('./kb_dataset.js')
+        .then(m => { if (m.renderDatasetSrcList) m.renderDatasetSrcList(); })
+        .catch(() => { _renderSrcList(); });
+    } else {
+      _renderSrcList();
+    }
+    if (S.kb && S.kb.name) {
+      loadDocs(S.kb.name);
+      renderStoreInfo();
+    }
+    return;
+  }
   if (!d.kbs.length) {
     el.innerHTML = '<div class="kb-sec">本地知识库</div>' +
       '<div class="kb-empty" style="padding:22px 10px">' +
@@ -91,7 +123,6 @@ export async function loadKb() {
       '<div class="kb-empty-h">点右上角「新建知识库」，或切到「云端 API」联网捞文献</div></div>';
     return;
   }
-  S.kb = (d.kbs.find(k => k.active) || d.kbs[0]);
   el.innerHTML = '<div class="kb-sec">本地知识库 · ' + d.kbs.length + '</div>' + d.kbs.map(k => {
     const act = k.active ? ' active' : '';
     const kbSize = Math.round((k.size_bytes || 0) / 1024);
