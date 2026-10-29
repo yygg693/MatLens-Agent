@@ -99,6 +99,7 @@ PROMPT_WRITE = """你是 MatLens 的材料科研写作专家。请按大纲撰�
 可用文献（引用白名单，只能引用这些，标 [n]）：
 {refs_text}
 {experimental_data}
+{kb_context}
 {existing_text}
 
 要求：
@@ -108,6 +109,11 @@ PROMPT_WRITE = """你是 MatLens 的材料科研写作专家。请按大纲撰�
 4. 行文风格：{tone_instruction}
 5. 参考文献排版风格：{cite_style_note}
 6. 直接输出本节正文（Markdown），不要寒暄
+
+【本地库原文素材的使用规则】
+- 若上方有「本地知识库原文素材」，可直接依据其中**原文**陈述事实与方法细节
+- ⚠️ 素材**不占用引用编号**：引用仍须使用白名单中的 [n]
+- 某条白名单文献若在素材中没有对应内容，**不要臆测其结论**
 
 【学术严谨性硬约束（逐条必须遵守，违反即返工）】
 A. **数据占位规范**：表格与正文严禁用 "—"、"n/a" 或留空来敷衍数据缺失。
@@ -370,6 +376,13 @@ def render_prompt(step: str, ctx: Dict[str, Any]) -> str:
     ctx.setdefault("cite_style_note", cite_style_note(ctx.get("cite_style", "gb7714")))
     if "experimental_data" not in ctx or isinstance(ctx.get("experimental_data"), dict):
         ctx["experimental_data"] = data_block(ctx.get("experimental_data"))
+    # 本地库原文素材（2026-10-29）：写作步按章节定向检索知识库后注入。
+    # 传 str → 原样使用；传 dict → 用其 block；缺省 → 空串（不报错）。
+    kb_ctx = ctx.get("kb_context")
+    if kb_ctx is None:
+        ctx["kb_context"] = ""
+    elif isinstance(kb_ctx, dict):
+        ctx["kb_context"] = kb_ctx.get("block") or kb_ctx.get("note") or ""
     return tpl.format(**ctx)
 
 
