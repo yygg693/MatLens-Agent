@@ -2,7 +2,7 @@
  * MatLens 前端 · paper.js（论文工坊 7 步：选题→检索→大纲→写作→
  * 质量→审稿→导出；含导出 Word / 回流知识库）
  * ═══════════════════════════════════════════════════════════════ */
-import { esc, $id, toast, renderMarkdown, jget, jpost, psCard } from './core.js';
+import { esc, $id, toast, renderMarkdown, jget, jpost, psCard, S } from './core.js';
 
 export const PAPER_STAGES = ['topic', 'search', 'outline', 'write', 'quality', 'review', 'export'];
 export const PAPER_LABELS = {
@@ -164,6 +164,7 @@ export function renderPaperPanel() {
       '</div>' +
     '</div>' +
     (prev && !prevDone ? '<div style="font-size:12px;color:var(--ml-warn);margin-bottom:10px">⚠ 前置步骤「' + PAPER_LABELS[prev] + '」未完成，请先完成上一步</div>' : '') +
+    (curStage === 'search' ? _renderRefCards() : '') +
     (curStage === 'write' ? _renderDataBlock() : '') +
     '<div style="flex:1;min-height:0;display:flex;flex-direction:column">' +
       '<div style="font-size:12px;color:var(--ml-text-faint);margin-bottom:6px" id="p-gen-label"></div>' +
@@ -182,6 +183,141 @@ export function renderPaperPanel() {
   const cancelBtn = $id('btn-p-cancel'); if (cancelBtn) cancelBtn.onclick = () => cancelPaperRun();
   const wordBtn = $id('btn-p-word'); if (wordBtn) wordBtn.onclick = () => exportPaper();
   const tokbBtn = $id('btn-p-tokb'); if (tokbBtn) tokbBtn.onclick = () => toKb();
+
+  // 检索步的文献卡片：绑定「找 OA 全文」按钮
+  document.querySelectorAll('[data-oa-resolve]').forEach(b => {
+    b.onclick = (e) => { e.preventDefault(); resolveRefOa(b, Number(b.dataset.oaResolve)); };
+  });
+}
+
+/* ══════════════════════════════════════════════════════════
+ * 检索步 · 文献卡片区
+ *
+ * 为什么要有：检索步只产出**题录**（题名/作者/DOI），写作时需要的是
+ * **正文** —— 引言要写别人的结论、方法要引用具体做法，只有题录的话
+ * LLM 只能编。所以每条文献给一个「找 OA 全文」入口：
+ *   点一下 → Unpaywall 按 DOI 解析合法开放获取版本 → 抓正文 → 索引进知识库
+ * 之后写作时 RAG 就能检索到这篇的正文。
+ *
+ * 合规：只取合法 OA 版本（作者自存/机构库/预印本），不碰付费墙。
+ * 抓不到就如实说明，不编造正文。
+ * ══════════════════════════════════════════════════════════ */
+function _renderRefCards() {
+  const st = (curPaper && curPaper.stages && curPaper.stages.search) || {};
+  const refs = st.refs || [];
+  if (!refs.length) return '';
+
+  const hasText = refs.filter(r => (r.text || '').trim()).length;
+
+  let html = '<div class="p-refs">' +
+    '<div class="p-refs-head">' +
+      '<b>核验文献 ' + refs.length + ' 条</b>' +
+      (hasText ? '<span class="p-refs-ok">其中 ' + hasText + ' 条已抓到正文</span>'
+               : '<span class="p-refs-tip">点击「找 OA 全文」可把正文抓下来并入库，写作时就能引用原文</span>') +
+    '</div>' +
+    '<div class="p-refs-list">' +
+    refs.map((r, i) => {
+      const idx = r.index || (i + 1);
+      const gotText = (r.text || '').trim();
+      const doi = (r.doi || '').replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+      return '<div class="p-ref" data-refi="' + i + '">' +
+        '<span class="p-ref-i">' + idx + '</span>' +
+        '<div class="p-ref-main">' +
+          '<div class="p-ref-t">' + esc(r.title || '（无题名）') + '</div>' +
+          '<div class="p-ref-m">' +
+            (r.authors ? '<span title="' + esc(r.authors) + '">' + esc(String(r.authors).slice(0, 52)) + '</span>' : '') +
+            (r.year ? '<span>' + esc(r.year) + '</span>' : '') +
+            (r.source ? '<span>' + esc(String(r.source).slice(0, 34)) + '</span>' : '') +
+            (doi ? '<span class="p-ref-doi mono">' + esc(doi) + '</span>' : '') +
+          '</div>' +
+          (gotText ? '<div class="p-ref-have">已抓到正文 ' + (r.text_chars || gotText.length) + ' 字' +
+            (r.resolved_via ? '（' + esc(r.resolved_via) + '）' : '') + '</div>' : '') +
+        '</div>' +
+        '<div class="p-ref-acts">' +
+          (doi
+            ? '<button class="p-ref-act' + (gotText ? ' done' : '') + '" data-oa-resolve="' + i + '" ' +
+              'title="按 DOI 查询合法开放获取版本（Unpaywall），抓到正文后自动索引进知识库">' +
+              (gotText ? '重新抓取' : '找 OA 全文') + '</button>'
+            : '<span class="p-ref-act dead" title="该条没有 DOI，无法自动解析开放版本">无 DOI</span>') +
+          (r.oa_url ? '<a class="p-ref-act" href="' + esc(r.oa_url) + '" target="_blank" rel="noopener" title="打开已知 OA 链接">OA 链接 ↗</a>' : '') +
+        '</div>' +
+        '<div class="p-ref-msg" id="p-ref-msg-' + i + '"></div>' +
+      '</div>';
+    }).join('') +
+    '</div></div>';
+  return html;
+}
+
+/** 解析并抓取某条文献的 OA 全文，可选索引进知识库。 */
+async function resolveRefOa(btn, idx) {
+  const st = (curPaper && curPaper.stages && curPaper.stages.search) || {};
+  const refs = st.refs || [];
+  const ref = refs[idx];
+  if (!ref) return;
+
+  const msgEl = $id('p-ref-msg-' + idx);
+  const doi = (ref.doi || '').replace(/^https?:\/\/(dx\.)?doi\.org\//i, '');
+  if (!doi) {
+    if (msgEl) msgEl.textContent = '该条没有 DOI，无法自动解析开放版本';
+    return;
+  }
+
+  const old = btn.textContent;
+  btn.textContent = '解析中…';
+  btn.disabled = true;
+  if (msgEl) msgEl.className = 'p-ref-msg busy';
+
+  // 有激活知识库就直接入库 —— 抓下来的正文只有进了 RAG 才能被写作引用
+  const kb = (S.kb && S.kb.name) || '';
+
+  try {
+    const r = await jpost('/api/web/resolve-oa', {
+      doi: doi,
+      title: ref.title || '',
+      authors: ref.authors || '',
+      year: ref.year || '',
+      fetch: true,
+      kb: kb,
+    });
+
+    if (r && r.ok && r.text) {
+      // 回写到 refs，下次打开面板仍能看到「已抓到正文」
+      ref.text = r.text;
+      ref.text_chars = r.text_chars;
+      ref.resolved_via = r.resolved_via || '';
+      ref.oa_url = r.oa_url || ref.oa_url;
+      // 存回后端（保存该步内容以带上更新后的 refs）
+      try {
+        await jpost('/api/papers/' + curPaper.id + '/save', {
+          stage: 'search',
+          content: st.content || '',
+          refs: refs,
+        });
+      } catch (e) { /* 保存失败不阻塞提示 */ }
+
+      if (msgEl) {
+        msgEl.className = 'p-ref-msg ok';
+        msgEl.textContent = (r.note || ('已抓取正文 ' + r.text_chars + ' 字'))
+          + (kb ? '' : '（未入库：未选中知识库）');
+      }
+      toast(r.note || '已抓取正文', 'ok');
+      renderPaperPanel();
+    } else {
+      if (msgEl) {
+        msgEl.className = 'p-ref-msg bad';
+        msgEl.textContent = (r && r.note) || '未找到开放获取版本';
+      }
+      btn.textContent = '找 OA 全文';
+    }
+  } catch (e) {
+    if (msgEl) {
+      msgEl.className = 'p-ref-msg bad';
+      msgEl.textContent = '解析失败：' + (e.message || e);
+    }
+    btn.textContent = old;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* write 步「实验数据」区块：摘要条（已存数据时常驻）+ 展开编辑器 */

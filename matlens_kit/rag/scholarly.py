@@ -798,6 +798,117 @@ def _search_aminer(query: str, limit: int, timeout: float) -> List[Dict[str, Any
     return out
 
 
+def _read_unpaywall_email_from_dotenv() -> str:
+    """从 ``~/.matlens/.env`` 读 UNPAYWALL_EMAIL。
+
+    服务进程启动时通常**没有**这个环境变量（用户只写在 .env 里），
+    而 ``fetch_unpaywall`` 原先只读环境变量 → 端点恒 502。
+    这里补上 .env 回落，且**不修改 os.environ**（只是读一次）。
+
+    ⚠️ 只取这一项，不做整体 dotenv 加载 —— 避免在库代码里产生
+    「导入 scholarly 就改了进程环境」的副作用。
+    """
+    try:
+        from pathlib import Path
+
+        from matlens_cli.config import get_matlens_home
+
+        p = Path(get_matlens_home()) / ".env"
+        if not p.exists():
+            return ""
+        for raw in p.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if not line.upper().startswith("UNPAYWALL_EMAIL="):
+                continue
+            val = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if "@" in val:
+                return val
+    except Exception:
+        return ""
+    return ""
+
+
+def fetch_europepmc_fulltext(doi_or_pmcid: str, timeout: float = _DEFAULT_TIMEOUT) -> Dict[str, Any]:
+    """经 **Europe PMC 官方 API** 按 DOI 取开放全文（2026-10-29）。
+
+    为什么需要这条路径：
+      Unpaywall 给的 OA 链接常在出版商域名，而那些站点的 robots.txt
+      往往禁止抓取（实测 MDPI 与 NCBI PMC 都在 ``Disallow`` 列表里）。
+      **robots 是站点的明确声明，绕过它就是违规** —— 所以不能靠"换个镜像抓"。
+
+    Europe PMC 提供的是**正规 REST API**（EBI），返回全文 XML，
+    合法可编程访问，且不受目标站点的 robots 约束。
+    实测 10.3390/membranes12090896 在 PMC 收录，正文可完整取回。
+
+    返回 ``{ok, text, title, pmcid, via}``；取不到时 ``ok=False``。
+    """
+    key = (doi_or_pmcid or "").strip()
+    if not key:
+        return {"ok": False, "error": "缺少 DOI"}
+    key = re.sub(r"^https?://(dx\.)?doi\.org/", "", key, flags=re.I)
+    # 按 DOI 查（Europe PMC 支持 DOI: 前缀查询）
+    url = ("https://www.ebi.ac.uk/europepmc/webservices/rest/search?query="
+           + urllib.parse.quote("DOI:" + key)
+           + "&format=json&pageSize=1&resultType=core")
+    try:
+        d = _get_json(url, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"Europe PMC 查询失败：{type(e).__name__}"}
+
+    res = ((d.get("resultList") or {}).get("result")) or []
+    if not res:
+        return {"ok": False, "error": "Europe PMC 未收录该 DOI"}
+    rec = res[0]
+    pmcid = (rec.get("pmcid") or "").strip()
+    is_oa = rec.get("isOpenAccess") == "Y"
+    if not pmcid:
+        return {"ok": False, "error": "Europe PMC 记录无 PMCID（无全文标识）"}
+    if not is_oa:
+        return {"ok": False, "error": "Europe PMC 中该文非开放获取（isOpenAccess != Y）"}
+
+    # 取全文 XML
+    xml_url = (f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML")
+    try:
+        raw = _http_get(xml_url, timeout=timeout).decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"全文抓取失败：{type(e).__name__}"}
+
+    text = _xml_to_text(raw)
+    if len(text) < 200:
+        return {"ok": False, "error": f"全文过短（{len(text)} 字），疑似解析失败"}
+    return {
+        "ok": True,
+        "text": text,
+        "title": (rec.get("title") or "").strip(),
+        "pmcid": pmcid,
+        "source": rec.get("source") or "",
+        "authors": (rec.get("authorString") or "")[:220],
+        "year": (rec.get("pubYear") or ""),
+        "via": "Europe PMC 官方 API",
+    }
+
+
+def _xml_to_text(xml: str) -> str:
+    """把 JATS XML 转纯文本（保留段落与标题层级）。"""
+    if not xml:
+        return ""
+    t = re.sub(r"<xref[^>]*>.*?</xref>", "", xml, flags=re.S | re.I)
+    t = re.sub(r"<ref-list.*?</ref-list>", "", t, flags=re.S | re.I)
+    # 段落级标签 → 换行
+    t = re.sub(r"</(p|title|sec|abstract|caption|list-item)>", "\n\n", t, flags=re.I)
+    t = re.sub(r"<title[^>]*>", "\n## ", t, flags=re.I)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = (t.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+           .replace("&quot;", '"').replace("&apos;", "'"))
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
 def fetch_unpaywall(doi_or_url: str, timeout: float = _DEFAULT_TIMEOUT) -> Dict[str, Any]:
     """按 DOI 解析合法开放获取全文链接（Unpaywall，只需邮箱）。
 
@@ -810,21 +921,59 @@ def fetch_unpaywall(doi_or_url: str, timeout: float = _DEFAULT_TIMEOUT) -> Dict[
         raise ValueError("需要 DOI（形如 10.xxxx/yyyy），当前来源未提供 DOI")
     # Unpaywall 要求真实联系邮箱，无效邮箱会直接 422。
     # 未配置时给出明确报错，而不是拿占位邮箱去撞接口。
+    #
+    # ⚠️ 必须同时看**环境变量与 ~/.matlens/.env**（2026-10-29 修复）：
+    # 服务进程启动时往往**没有**这个环境变量（用户只写在 .env 里），
+    # 于是「找 OA 全文」永远 502 —— 端点看起来坏了，其实只是没读到配置。
     email = (os.environ.get("UNPAYWALL_EMAIL") or "").strip()
     if not email or "@" not in email:
-        raise RuntimeError("未配置 UNPAYWALL_EMAIL（Unpaywall 需真实邮箱校验，任意邮箱即可）")
+        email = _read_unpaywall_email_from_dotenv()
+    if not email or "@" not in email:
+        raise RuntimeError(
+            "未配置 UNPAYWALL_EMAIL（Unpaywall 需联系邮箱，任意真实邮箱即可）。"
+            "请在 ~/.matlens/.env 里加一行 UNPAYWALL_EMAIL=你的邮箱，"
+            "或设置同名环境变量后重启服务。")
     url = f"https://api.unpaywall.org/v2/{urllib.parse.quote(doi)}?email={urllib.parse.quote(email)}"
     d = _get_json(url, timeout=timeout)
     loc = d.get("best_oa_location") or {}
+
+    # ⚠️ 必须返回**全部**候选位置，不能只给 best_oa_location（2026-10-29 实测）：
+    # 实测 10.3390/membranes12090896 的 best 是 publisher 域（mdpi.com，
+    # robots 禁止抓 → 拿不到正文），但同一记录里还有
+    #   host_type=repository → ncbi.nlm.nih.gov/pmc/...  ← PMC 镜像，可抓
+    #   host_type=repository → doaj.org/...
+    # 只用 best 会让「明明有合法 OA 全文」被判成抓不到。
+    # 排序规则：repository（机构库/镜像）优先于 publisher，
+    # 因为出版商站点的 robots 限制更常见。
+    alts = []
+    seen_alt = set()
+    for o in (d.get("oa_locations") or []):
+        u = (o.get("url_for_pdf") or o.get("url") or "").strip()
+        if not u or u in seen_alt:
+            continue
+        seen_alt.add(u)
+        alts.append({
+            "url": u,
+            "landing_page": o.get("url_for_landing_page") or o.get("url") or "",
+            "host_type": o.get("host_type") or "",
+            "version": o.get("version") or "",
+            "license": o.get("license") or "",
+        })
+    # best 放最前，其余按 repository 优先
+    best_url = loc.get("url_for_pdf") or loc.get("url") or ""
+    alts.sort(key=lambda x: (0 if x["url"] == best_url else 1,
+                              0 if x["host_type"] == "repository" else 1))
+
     return {
         "doi": d.get("doi") or doi,
         "title": d.get("title") or "",
         "is_oa": bool(d.get("is_oa")),
         "oa_status": d.get("oa_status") or "",
-        "oa_url": loc.get("url_for_pdf") or loc.get("url") or "",
+        "oa_url": best_url,
         "landing_page": loc.get("url") or "",
         "host_type": loc.get("host_type") or "",
         "license": loc.get("license") or "",
+        "alternatives": alts,
         "note": d.get("message") or "",
     }
 

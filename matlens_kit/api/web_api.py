@@ -162,6 +162,194 @@ def fetch_batch(payload: Dict[str, Any] = None) -> Dict[str, Any]:
                     "请据此改用开放获取渠道，勿重复重试。"}
 
 
+# ────────────────────────────────────────────────────────────
+# 文献 OA 全文解析与抓取（2026-10-29）
+#
+# 场景：论文工坊检索到一批文献，但只有题录没有正文 → 写作时无法引用
+# 具体结论。Unpaywall 能按 DOI 解析出**合法**开放获取版本
+# （作者自存 / 机构库 / 预印本），实测能把「0 字符」变成 64004 字全文。
+#
+# 合规：与 web_fetcher 完全一致 —— 遵守 robots、只取合法 OA 版本、
+# 明令禁止的站点不降级。抓不到就如实报告，绝不编造正文。
+# ────────────────────────────────────────────────────────────
+@_router.post("/resolve-oa")
+def resolve_oa_fulltext(payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """按 DOI 找合法 OA 全文版本，并（可选）抓取正文。
+
+    body: ``{doi, title, authors, year, kb?, fetch?: true}``
+
+    返回 ``{ok, is_oa, oa_status, oa_url, text?, text_chars?, kb?, note}``。
+    - ``fetch=false``（默认）：只解析链接，不抓正文 —— 快、零流量
+    - ``fetch=true``：抓正文；给了 ``kb`` 就顺便写进该知识库
+    """
+    from matlens_kit.rag import scholarly
+    from matlens_kit.web import web_fetcher as wf
+
+    payload = payload or {}
+    doi = (payload.get("doi") or "").strip()
+    if not doi:
+        raise HTTPException(status_code=400, detail="doi 必填")
+
+    try:
+        oa = scholarly.fetch_unpaywall(doi)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"OA 解析失败：{str(e)[:140]}")
+
+    out: Dict[str, Any] = {
+        "ok": True,
+        "doi": doi,
+        "is_oa": bool(oa.get("is_oa")),
+        "oa_status": oa.get("oa_status", ""),
+        "oa_url": oa.get("oa_url") or "",
+        "host_type": oa.get("host_type") or "",
+        "license": oa.get("license") or "",
+    }
+
+    if not out["is_oa"] or not out["oa_url"]:
+        out["ok"] = False
+        out["note"] = ("该文献没有合法开放获取版本"
+                       f"（{out['oa_status'] or 'closed'}）—— "
+                       "closed 表示只开放阅读、不提供可直取全文；"
+                       "bronze 需机构订阅。正文请手动下载 PDF 后上传。")
+        return out
+
+    if not payload.get("fetch"):
+        out["note"] = (f"找到开放获取版本（{out['oa_status']}）。"
+                       "勾选「抓取正文」可把全文抓下来并索引进知识库。")
+        return out
+
+    # 抓正文（内含 robots 检查 + 同域判断 + 降级链）
+    #
+    # ⚠️ 必须**遍历全部候选位置**：Unpaywall 的 best 位置常指向出版商域名
+    # （robots 多半禁止抓），而同一条记录里往往还有 repository 镜像
+    # （PMC / 机构库）可以抓。实测 10.3390/membranes12090896 就是这种情况：
+    # best=mdpi.com（robots 禁止）→ 换成 ncbi PMC 成功。
+    candidates = []
+    for a in (oa.get("alternatives") or []):
+        u = a.get("url") or ""
+        if u and u not in candidates:
+            candidates.append(u)
+    if out["oa_url"] and out["oa_url"] not in candidates:
+        candidates.insert(0, out["oa_url"])
+
+    if not candidates:
+        out["ok"] = False
+        out["note"] = "Unpaywall 记录里没有可用的全文链接"
+        return out
+
+    tried: List[str] = []
+    res: Dict[str, Any] = {}
+    for url in candidates[:6]:
+        tried.append(url)
+        try:
+            res = wf.fetch(url, with_text=True,
+                           timeout=float(payload.get("timeout") or 25.0))
+        except Exception as e:  # noqa: BLE001
+            out.setdefault("tried", []).append({"url": url, "error": f"{type(e).__name__}"})
+            continue
+        if res.get("ok") and (res.get("text") or "").strip():
+            break
+        out.setdefault("tried", []).append({
+            "url": url,
+            "error": str(res.get("oa_fallback_error") or res.get("reason") or "未取到正文")[:120],
+        })
+
+    out["tried"] = out.get("tried", [])[:6]
+    text = (res.get("text") or "").strip()
+    if not text:
+        # ── 兜底：Europe PMC 官方 API ──
+        # Unpaywall 给的链接常在出版商域名，而那些站点的 robots 往往
+        # 禁止抓（实测 MDPI 与 NCBI PMC 都在 Disallow 列表里）。
+        # **robots 是站点的明确声明，绕过即违规** —— 所以不能靠"换镜像硬抓"，
+        # 而要转向**正规 API**：Europe PMC（EBI）提供全文 XML，合法可编程访问。
+        try:
+            from matlens_kit.rag import scholarly as _sch
+
+            epmc = _sch.fetch_europepmc_fulltext(doi, timeout=float(payload.get("timeout") or 25.0))
+            if epmc.get("ok"):
+                out["ok"] = True
+                out["text"] = epmc["text"][:20000]
+                out["text_chars"] = len(epmc["text"])
+                out["engine"] = "europepmc-xml"
+                out["resolved_via"] = epmc.get("via") or "Europe PMC 官方 API"
+                out["pmcid"] = epmc.get("pmcid") or ""
+                text = epmc["text"]
+                out.setdefault("tried", []).append(
+                    {"url": "Europe PMC API", "error": "", "ok": True})
+            else:
+                out.setdefault("tried", []).append(
+                    {"url": "Europe PMC API", "error": str(epmc.get("error") or "")[:100]})
+        except Exception as e:  # noqa: BLE001
+            out.setdefault("tried", []).append(
+                {"url": "Europe PMC API", "error": f"{type(e).__name__}"})
+
+    if not text:
+        out["ok"] = False
+        reasons = "；".join(
+            str(t.get("error") or "")[:44] for t in out.get("tried", [])[:3]
+        ) or "未知原因"
+        out["note"] = ("已尝试 " + str(len(out.get("tried", []))) +
+                       " 个开放获取位置都拿不到正文：" + reasons +
+                       "。可能是出版商付费墙 / robots 限制 / 页面为 JS 动态渲染，"
+                       "请手动下载 PDF 后上传。")
+        return out
+
+    out["text"] = text[:20000]
+    out["text_chars"] = len(text)
+    # ⚠️ 用 setdefault：Europe PMC 兜底路径已经设过 engine/resolved_via，
+    # 这里若直接赋值会把它覆盖成空（实测过）。
+    out.setdefault("engine", res.get("engine") or "")
+    out.setdefault("resolved_via", res.get("resolved_via") or "")
+
+    # 可选：写进知识库
+    kb_name = (payload.get("kb") or "").strip()
+    if kb_name:
+        from matlens_cli.config import get_matlens_home
+        from matlens_kit.plugins.local_rag import get_manager
+
+        mgr = get_manager()
+        if kb_name not in mgr.list_kbs():
+            raise HTTPException(status_code=404, detail=f"知识库 {kb_name} 不存在")
+        kb = mgr.get(kb_name)
+
+        title = (payload.get("title") or "").strip() or ("OA-" + doi)
+        out_dir = get_matlens_home() / "uploads" / "oa" / time.strftime("%Y%m%d")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title).strip()
+        safe = re.sub(r"\s+", " ", safe)[:56].rstrip(". ") or "untitled"
+        doi_key = re.sub(r"[^A-Za-z0-9]", "_", doi)
+        p = out_dir / f"{safe}__{doi_key}.md"
+
+        md = [f"# {title}", ""]
+        if payload.get("authors"):
+            md.append("- 作者：" + str(payload["authors"]))
+        if payload.get("year"):
+            md.append("- 年份：" + str(payload["year"]))
+        md.append("- DOI：" + doi)
+        md.append("- 开放获取：" + out["oa_status"] +
+                  (f"（{out['license']}）" if out.get("license") else ""))
+        md.append("- 全文链接：" + out["oa_url"])
+        md += ["", "## 正文", "", text[:20000]]
+        try:
+            p.write_text("\n".join(md), encoding="utf-8")
+            add = kb.add_documents([str(p)])
+            out["kb"] = kb_name
+            out["indexed"] = True
+            out["add"] = add
+            out["note"] = (f"已抓取正文 {len(text)} 字并索引进「{kb_name}」，"
+                           "写作时 RAG 就能检索到这篇的正文了。")
+        except Exception as e:  # noqa: BLE001
+            out["indexed"] = False
+            out["note"] = (f"正文已抓取（{len(text)} 字），但写入知识库失败："
+                           f"{type(e).__name__}")
+    else:
+        out["note"] = f"已抓取正文 {len(text)} 字（未入库，可指定 kb 参数直接沉淀）"
+
+    return out
+
+
 @_router.post("/to-kb")
 def to_kb(payload: Dict[str, Any] = None) -> Dict[str, Any]:
     """把抓到的页面正文写成 Markdown 并索引进指定知识库。

@@ -1339,6 +1339,39 @@ input,textarea,select{font-family:inherit;font-size:13px}
 .step.done .s-num{background:rgba(52,211,153,.14);border-color:var(--ml-ok);color:var(--ml-ok)}
 .step-arrow{color:var(--ml-text-faint);font-size:13px;margin:0 3px}
 .paper-panel{background:var(--ml-card);border:1px solid var(--ml-card-border);border-radius:14px;padding:20px;flex:1;display:flex;flex-direction:column;overflow:hidden;backdrop-filter:blur(var(--ml-glass-blur)) saturate(150%);-webkit-backdrop-filter:blur(var(--ml-glass-blur)) saturate(150%);box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+/* 检索步 · 文献卡片（2026-10-29）—— 「找 OA 全文」入口 */
+.p-refs{margin-bottom:14px;border:1px solid var(--ml-card-border);border-radius:12px;
+  background:var(--ml-card-deep);overflow:hidden}
+.p-refs-head{display:flex;align-items:baseline;gap:10px;padding:10px 13px;flex-wrap:wrap;
+  border-bottom:1px solid var(--ml-card-border);font-size:12px}
+.p-refs-head b{font-weight:700;color:var(--ml-text);font-size:12.5px}
+.p-refs-ok{font-size:11px;color:var(--ml-ok)}
+.p-refs-tip{font-size:11px;color:var(--ml-text-faint)}
+.p-refs-list{max-height:330px;overflow-y:auto;padding:6px}
+.p-ref{display:flex;align-items:flex-start;gap:10px;padding:9px 10px;border-radius:9px;
+  border:1px solid transparent;transition:border-color .2s,background .2s;flex-wrap:wrap}
+.p-ref:hover{border-color:var(--ml-card-border);background:var(--ml-card)}
+.p-ref-i{flex:none;width:20px;height:20px;border-radius:6px;display:flex;align-items:center;
+  justify-content:center;font-size:10px;font-weight:700;font-family:var(--mono);
+  background:var(--ml-card);border:1px solid var(--ml-card-border);color:var(--ml-text-faint);margin-top:1px}
+.p-ref-main{flex:1;min-width:200px}
+.p-ref-t{font-size:12.5px;font-weight:600;color:var(--ml-text);line-height:1.5;word-break:break-word}
+.p-ref-m{display:flex;gap:9px;flex-wrap:wrap;font-size:10.5px;color:var(--ml-text-faint);margin-top:4px}
+.p-ref-doi{font-family:var(--mono);color:var(--ml-sky)}
+.p-ref-have{font-size:10.5px;color:var(--ml-ok);margin-top:4px}
+.p-ref-acts{flex:none;display:flex;gap:6px;align-items:flex-start;margin-top:1px}
+.p-ref-act{font-size:10.5px;padding:4px 9px;border-radius:7px;cursor:pointer;
+  border:1px solid rgba(56,189,248,.3);background:rgba(56,189,248,.09);color:var(--ml-sky);
+  text-decoration:none;white-space:nowrap;line-height:1.5}
+.p-ref-act:hover{background:rgba(56,189,248,.16);border-color:var(--ml-sky)}
+.p-ref-act:disabled{opacity:.55;cursor:default}
+.p-ref-act.done{border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.09);color:var(--ml-ok)}
+.p-ref-act.dead{border-color:var(--ml-card-border);background:transparent;color:var(--ml-text-faint);cursor:not-allowed}
+.p-ref-msg{flex-basis:100%;font-size:10.5px;line-height:1.6;color:var(--ml-text-faint);
+  padding:5px 0 0 30px}
+.p-ref-msg.ok{color:var(--ml-ok)}
+.p-ref-msg.bad{color:var(--ml-danger)}
+.p-ref-msg.busy{color:var(--ml-warn)}
 @keyframes thinkingPulse{0%,100%{opacity:1}50%{opacity:.4}}
 .thinking-pulse{animation:thinkingPulse 1.2s ease-in-out infinite}
 .editor-split{display:flex;gap:16px;height:calc(100% - 42px)}
