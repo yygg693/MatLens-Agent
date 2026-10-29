@@ -684,6 +684,154 @@ def _http_get(url: str, timeout: float = DEFAULT_TIMEOUT,
 # ────────────────────────────────────────────────────────────
 # 正文抽取（L2 trafilatura → L1 内置规则）
 # ────────────────────────────────────────────────────────────
+#: 占位文本特征（JS 页面渲染前的骨架）。命中则说明**还没渲染完**。
+#: ⚠️ 用**包含**匹配而非整行匹配 —— 实际占位文本常带前后缀
+#: （"Please enable JavaScript to continue" / "加载中，请稍候"）。
+_PLACEHOLDER_PAT = re.compile(
+    r"loading|加载中|please\s+wait|正在加载|请稍候|稍候|"
+    r"javascript\s+(is\s+)?required|enable\s+javascript|"
+    r"请开启\s*javascript|需要\s*javascript",
+    re.I)
+
+
+def _is_placeholder_only(text: str) -> bool:
+    """文本是否只是「加载中」之类的占位符。
+
+    JS 页面在渲染完成前，DOM 里往往只有一句占位文字（「加载中...」）。
+    实测静态抽取拿到 15 字占位、L3 渲染后拿到 28 字正文 —— 两者长度相近，
+    只看长度分不出来，必须看内容。
+
+    判定：去掉标题行后，**所有**正文行都命中占位特征 → 判定为未渲染。
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    lines = [l.strip() for l in t.splitlines() if l.strip()]
+    if not lines:
+        return True
+    # 标题行（# 开头）与「正文首行」（原页面 title）都排除
+    body = [l for l in lines if not l.startswith("#")]
+    if len(body) > 1:
+        body = body[1:]          # 首行通常是 <title>，不是渲染内容
+    if not body:
+        return True
+    # 所有正文行都命中占位特征 → 未渲染完
+    return all(_PLACEHOLDER_PAT.search(l) for l in body)
+
+
+def _crawl4ai_render(url: str, timeout: float = 45.0) -> Dict[str, Any]:
+    """L3：用 crawl4ai 做 JS 动态渲染后再抽正文。
+
+    ⚠️ 背景（2026-10-29 修复）：此前 ``_has_crawl4ai()`` 只做**检测**，
+    实际抓取路径**从未调用** crawl4ai —— 文档里「L3 装了自动用」是空头承诺。
+    现在真正接上了。
+
+    定位：**只作为静态抽取失败后的兜底**，不是默认路径。
+    动态渲染要起浏览器，慢 10~30 秒，且对 arXiv/Nature 这类静态页面毫无增益。
+
+    返回 ``{ok, text, engine, markdown, elapsed_ms, error}``。
+    任何失败都**返回 ok=False 而不是抛出** —— L3 是可选增强，
+    装不上或起不来都必须静默降级回 L2。
+    """
+    t0 = time.time()
+    _ensure_vendor_on_path()
+    try:
+        import asyncio
+
+        from crawl4ai import (AsyncWebCrawler, BrowserConfig, CacheMode,
+                              CrawlerRunConfig, UndetectedAdapter)
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+        from crawl4ai.content_filter_strategy import BM25ContentFilter
+        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"crawl4ai 不可用：{type(e).__name__}",
+                "elapsed_ms": 0}
+
+    async def _run() -> Dict[str, Any]:
+        # ⚠️ crawl4ai 0.9.x 的参数位置踩过坑（全部实测）：
+        #   - 配置要用**对象**（BrowserConfig / CrawlerRunConfig），传 dict 静默失效
+        #   - ``page_timeout`` / ``wait_for`` / ``js_code`` 都在 **CrawlerRunConfig**，
+        #     不在 BrowserConfig（传错直接 TypeError）
+        #   - BM25ContentFilter 用 ``bm25_threshold``，没有 ``usecases`` 参数
+        #   - **UndetectedAdapter 要挂在 strategy 上**，不是 AsyncWebCrawler ——
+        #     后者只把 ``browser_adapter`` 塞进 **kwargs，会被静默忽略**，
+        #     结果仍走默认 PlaywrightAdapter（要求另一套浏览器版本，本机没有）。
+        #   - ``js_code`` **不是等待语义**（实测传了也拿不到渲染后内容）；
+        #     要等 JS 得用 ``wait_for='css:...'`` 或 ``delay_before_return_html``。
+        browser_cfg = BrowserConfig(headless=True, verbose=False)
+        md_gen = DefaultMarkdownGenerator(
+            content_filter=BM25ContentFilter(bm25_threshold=0.8))
+        run_cfg = CrawlerRunConfig(
+            cache_mode=CacheMode.BYPASS,   # 抓取层已自带缓存，这里不再重复缓存
+            markdown_generator=md_gen,
+            # page_timeout 先不设 —— 实测设了它会让 delay_before_return_html
+            # 失效（27 字符 vs 完整正文），原因未明但结果稳定复现。
+            # 等 JS 渲染完成。
+            # ⚠️ `wait_for` 语义是「**任一**匹配即返回」，用它等 JS 渲染不可靠：
+            #   `css:body`     → body 一直存在，立刻返回（拿到渲染前内容）
+            #   `css:body *`   → body 有子元素就返回（同上）
+            #   `css:article, css:main, css:body *` → 仍会命中 body * 而提前返回
+            # 实测只有**具体内容元素**（如 `css:#app h1`）才等得住，但选择器因站点而异，
+            # 无法通用。
+            # → 采用固定延迟兜底：实测 `delay_before_return_html=2.5` 能稳定拿到
+            #   渲染后正文（3 秒延迟才出内容的页面则需更大值，故取 3.0）。
+            delay_before_return_html=3.0,
+            verbose=False,
+        )
+        strategy = AsyncPlaywrightCrawlerStrategy(
+            browser_config=browser_cfg,
+            browser_adapter=UndetectedAdapter(),
+        )
+
+        async with AsyncWebCrawler(crawler_strategy=strategy) as crawler:
+            result = await crawler.arun(url=url, config=run_cfg)
+            # crawl4ai 新旧版本的取值路径不同，逐个试
+            md = ""
+            for getter in (
+                lambda: result.markdown,
+                lambda: getattr(result, "markdown", None),
+            ):
+                try:
+                    v = getter()
+                except Exception:
+                    v = None
+                if isinstance(v, str) and v.strip():
+                    md = v
+                    break
+                if v is not None and hasattr(v, "raw_markdown"):
+                    md = v.raw_markdown or ""
+                    break
+            return {"markdown": md or ""}
+
+    try:
+        out = asyncio.run(_run())
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"crawl4ai 渲染失败：{type(e).__name__}: {str(e)[:120]}",
+                "elapsed_ms": int((time.time() - t0) * 1000)}
+
+    md = (out.get("markdown") or "").strip()
+    # ⚠️ 阈值不能定 200：L3 渲染后的正文长度**因页面而异**（小页面几十字也正常），
+    # 定 200 会把成功渲染判成失败（实测 28 字的渲染结果被误判）。
+    # 判据改为「有实质内容」：至少 40 字且不是纯占位文本。
+    if len(md) < 40 or _is_placeholder_only(md):
+        return {"ok": False,
+                "error": f"crawl4ai 渲染后仍无正文（{len(md)} 字符）",
+                "elapsed_ms": int((time.time() - t0) * 1000)}
+
+    return {
+        "ok": True,
+        "text": md,
+        "markdown": md,
+        "engine": "crawl4ai",
+        "elapsed_ms": int((time.time() - t0) * 1000),
+    }
+
+
+def _fetch_l3(url: str, timeout: float = 45.0) -> Dict[str, Any]:
+    """L3 同步包装（crawl4ai 是异步的，这里用 asyncio.run 桥接）。"""
+    return _crawl4ai_render(url, timeout=timeout)
+
+
 def _ensure_vendor_on_path() -> None:
     """把项目内 vendor/pylibs 加入 sys.path。
 
@@ -1067,6 +1215,25 @@ def fetch(url: str, with_text: bool = True, timeout: float = DEFAULT_TIMEOUT,
     res["text"] = text
     res["text_chars"] = len(text)
     res["engine"] = engine
+
+    # ── L3 兜底：静态抽取失败或正文过短 → 动态渲染再试一次（2026-10-29 真正接上）──
+    # 此前这里只提示「需 crawl4ai」，但 crawl4ai 从未被调用过 ——
+    # 装了也没用。现在：静态失败 → L3 渲染 → 仍失败才走 OA 降级。
+    #
+    # ⚠️ 触发条件必须包含「正文过短」：JS 页面在静态 HTML 里往往有一句占位文字
+    # （实测「加载中...」共 15 字），**非空但无内容** ——
+    # 只判 `not text` 会漏掉这类（实测 L2 拿到 15 字就不触发 L3）。
+    if len(text) < 120 and _has_crawl4ai():
+        l3 = _crawl4ai_render(url, timeout=min(timeout * 2, 60.0))
+        res["l3_attempted"] = True
+        if l3.get("ok"):
+            res["text"] = l3["text"]
+            res["text_chars"] = len(l3["text"])
+            res["engine"] = "crawl4ai"
+            res["elapsed_ms"] = int((time.time() - t0) * 1000)
+            return res
+        res["l3_error"] = str(l3.get("error") or "")[:140]
+
     if not text:
         res["notes"] = (res.get("notes") or []) + [
             "未抽取出正文：可能页面为纯 JS 渲染（需 crawl4ai）或正文在付费墙后"]
