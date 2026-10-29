@@ -485,6 +485,17 @@ from matlens_cli.memory_oauth import router as _memory_oauth_router  # noqa: E40
 
 app.include_router(_memory_oauth_router)
 
+# Memory *content* routes (list / browse / create / edit / delete / status).
+# Mounted under /api/memories because /api/memory is already taken above by
+# the provider-status endpoint; the two have different meanings and must not
+# share a path.
+from matlens_kit.api.mem_api import (  # noqa: E402
+    MEMORY_CONTENT_PREFIX,
+    build_router as _build_memory_router,
+)
+
+app.include_router(_build_memory_router(MEMORY_CONTENT_PREFIX))
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via

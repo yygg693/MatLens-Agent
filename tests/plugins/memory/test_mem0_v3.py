@@ -240,6 +240,236 @@ class TestMem0Prefetch:
         assert backend.captured == []
 
 
+class TestMem0Provenance:
+    """Provenance must survive the round trip into and out of the backend.
+
+    The provider used to hard-code ``{"channel": ...}`` as the write metadata
+    and forward only ``id``/``memory``/``score`` on search, so every trace of
+    "where did this fact come from" was dropped at the provider boundary.
+    """
+
+    def _make_provider(self, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "matlens"
+        provider._backend = backend
+        return provider
+
+    # -- write metadata -------------------------------------------------
+
+    def test_write_metadata_merges_extra(self):
+        provider = self._make_provider(FakeBackend())
+        merged = provider._write_metadata({"session_id": "s1", "write_origin": "assistant_tool"})
+        assert merged["session_id"] == "s1"
+        assert merged["write_origin"] == "assistant_tool"
+        assert merged["channel"] == "cli"
+
+    def test_write_metadata_channel_not_overridable(self):
+        provider = self._make_provider(FakeBackend())
+        merged = provider._write_metadata({"channel": "spoofed"})
+        assert merged["channel"] == "cli"
+
+    def test_write_metadata_drops_empty_values(self):
+        provider = self._make_provider(FakeBackend())
+        merged = provider._write_metadata(
+            {"a": None, "b": "", "c": {}, "d": [], "keep": "yes"}
+        )
+        assert "a" not in merged
+        assert "b" not in merged
+        assert "c" not in merged
+        assert "d" not in merged
+        assert merged["keep"] == "yes"
+
+    def test_write_metadata_does_not_mutate_extra(self):
+        provider = self._make_provider(FakeBackend())
+        extra = {"session_id": "s1"}
+        provider._write_metadata(extra)
+        assert extra == {"session_id": "s1"}
+
+    # -- search results -------------------------------------------------
+
+    def test_search_returns_provenance_fields(self):
+        backend = FakeBackend(search_results=[{
+            "id": "mem-1",
+            "memory": "NCM811 doped at 8% Mg",
+            "score": 0.9,
+            "created_at": "2026-08-01T10:00:00",
+            "updated_at": "2026-08-02T11:00:00",
+            "metadata": {"source_type": "document", "source_ref": "10.1000/xyz"},
+        }])
+        provider = self._make_provider(backend)
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "NCM811"}))
+        item = result["results"][0]
+        assert item["created_at"] == "2026-08-01T10:00:00"
+        assert item["updated_at"] == "2026-08-02T11:00:00"
+        assert item["metadata"]["source_type"] == "document"
+        assert item["metadata"]["source_ref"] == "10.1000/xyz"
+
+    def test_search_metadata_defaults_to_dict(self):
+        backend = FakeBackend(search_results=[
+            {"id": "mem-1", "memory": "x", "score": 0.1, "metadata": None},
+        ])
+        provider = self._make_provider(backend)
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "x"}))
+        assert result["results"][0]["metadata"] == {}
+        assert result["results"][0]["created_at"] is None
+
+    def test_search_created_at_falls_back_to_metadata(self):
+        backend = FakeBackend(search_results=[{
+            "id": "mem-1", "memory": "x", "score": 0.1,
+            "metadata": {"created_at": "2026-07-09"},
+        }])
+        provider = self._make_provider(backend)
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "x"}))
+        assert result["results"][0]["created_at"] == "2026-07-09"
+
+    def test_search_keeps_original_fields(self):
+        backend = FakeBackend(search_results=[{"id": "mem-1", "memory": "foo", "score": 0.9}])
+        provider = self._make_provider(backend)
+        result = json.loads(provider.handle_tool_call("mem0_search", {"query": "test"}))
+        item = result["results"][0]
+        assert item["id"] == "mem-1"
+        assert item["memory"] == "foo"
+        assert item["score"] == 0.9
+
+    # -- on_memory_write bridge ----------------------------------------
+
+    def test_on_memory_write_mirrors_to_backend(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.on_memory_write(
+            "add", "user", "user prefers XPS over XRD",
+            {"write_origin": "assistant_tool", "session_id": "s7"},
+        )
+        provider._write_thread.join(timeout=5)
+        adds = [c for c in backend.captured if c[0] == "add"]
+        assert len(adds) == 1
+        meta = adds[0][2]["metadata"]
+        assert meta["write_origin"] == "assistant_tool"
+        assert meta["session_id"] == "s7"
+        assert meta["memory_target"] == "user"
+
+    def test_on_memory_write_targets_user_profile(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.on_memory_write("add", "user", "x", {})
+        provider._write_thread.join(timeout=5)
+        adds = [c for c in backend.captured if c[0] == "add"]
+        assert adds[0][2]["metadata"]["memory_target"] == "user"
+
+    def test_on_memory_write_agent_target(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.on_memory_write("add", "memory", "x", {})
+        provider._write_thread.join(timeout=5)
+        adds = [c for c in backend.captured if c[0] == "add"]
+        assert adds[0][2]["metadata"]["memory_target"] == "memory"
+
+    def test_on_memory_write_ignores_remove(self):
+        # mem0 deletes by id; this hook only has the entry text, so removal
+        # cannot be resolved safely and must stay with the mem0_delete tool.
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.on_memory_write("remove", "memory", "some fact", {})
+        if provider._write_thread is not None:
+            provider._write_thread.join(timeout=5)
+        assert [c for c in backend.captured if c[0] == "add"] == []
+
+    def test_on_memory_write_ignores_empty_content(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.on_memory_write("add", "memory", "   ", {})
+        if provider._write_thread is not None:
+            provider._write_thread.join(timeout=5)
+        assert [c for c in backend.captured if c[0] == "add"] == []
+
+    def test_on_memory_write_does_not_re_extract(self):
+        # The built-in memory tool already stores a distilled fact; running the
+        # LLM extractor over it again would paraphrase it twice.
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.on_memory_write("add", "memory", "already distilled", {})
+        provider._write_thread.join(timeout=5)
+        adds = [c for c in backend.captured if c[0] == "add"]
+        assert adds[0][2]["infer"] is False
+
+    def test_on_memory_write_survives_backend_failure(self):
+        class ExplodingBackend(FakeBackend):
+            def add(self, messages, **kwargs):
+                raise RuntimeError("qdrant down")
+
+        provider = self._make_provider(ExplodingBackend())
+        provider.on_memory_write("add", "memory", "x", {})
+        provider._write_thread.join(timeout=5)
+        # No exception escaped the worker thread.
+        assert provider._consecutive_failures >= 1
+
+    # -- mem0_add source fields ----------------------------------------
+
+    def test_mem0_add_passes_source_fields(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.handle_tool_call("mem0_add", {
+            "content": "YSZ electrolyte doped with GDC",
+            "source_type": "document",
+            "source_ref": "10.1000/abc",
+            "confidence": 0.8,
+        })
+        add = [c for c in backend.captured if c[0] == "add"][0]
+        meta = add[2]["metadata"]
+        assert meta["source_type"] == "document"
+        assert meta["source_ref"] == "10.1000/abc"
+        assert meta["confidence"] == 0.8
+
+    def test_mem0_add_rejects_invalid_source_type(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        result = json.loads(provider.handle_tool_call("mem0_add", {
+            "content": "x", "source_type": "bogus",
+        }))
+        assert "error" not in result
+        meta = [c for c in backend.captured if c[0] == "add"][0][2]["metadata"]
+        assert "source_type" not in meta
+
+    def test_mem0_add_rejects_out_of_range_confidence(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.handle_tool_call("mem0_add", {"content": "x", "confidence": 5})
+        meta = [c for c in backend.captured if c[0] == "add"][0][2]["metadata"]
+        assert "confidence" not in meta
+
+    def test_mem0_add_without_source_fields(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.handle_tool_call("mem0_add", {"content": "plain fact"})
+        meta = [c for c in backend.captured if c[0] == "add"][0][2]["metadata"]
+        assert "source_type" not in meta
+        assert meta["channel"] == "cli"
+
+    def test_add_schema_keeps_content_only_required(self):
+        # The model must never fail a call just because it omitted provenance.
+        schema = next(
+            s for s in Mem0MemoryProvider().get_tool_schemas() if s["name"] == "mem0_add"
+        )
+        assert schema["parameters"]["required"] == ["content"]
+        props = schema["parameters"]["properties"]
+        assert "source_type" in props
+        assert "source_ref" in props
+        assert "confidence" in props
+
+    # -- sync_turn provenance ------------------------------------------
+
+    def test_sync_turn_marks_agent_inference(self):
+        backend = FakeBackend()
+        provider = self._make_provider(backend)
+        provider.sync_turn("user said", "assistant replied", session_id="s1")
+        provider._sync_thread.join(timeout=5)
+        meta = [c for c in backend.captured if c[0] == "add"][0][2]["metadata"]
+        assert meta["source_type"] == "agent_inference"
+        assert meta["session_id"] == "s1"
+
+
 class TestMem0V3Config:
 
     def test_tool_schemas_four_tools(self):

@@ -24,6 +24,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Brain,
   Clock,
   Code,
   Cpu,
@@ -82,6 +83,7 @@ const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
+const MemoryPage = lazy(() => import("@/pages/MemoryPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
@@ -156,6 +158,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/memory": MemoryPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -190,6 +193,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
+  { path: "/memory", label: "Memory", icon: Brain },
   { path: "/files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
@@ -226,6 +230,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
   BarChart3,
+  Brain,
   Clock,
   Cpu,
   FileText,

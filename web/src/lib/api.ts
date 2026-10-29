@@ -1203,6 +1203,64 @@ export const api = {
       body: JSON.stringify({ target }),
     }),
 
+  // ── Memory content ──────────────────────────────────────────────────
+  // The dashboard server mounts the memory-content router at
+  // /api/memories because /api/memory already means "provider status"
+  // there. The kit server keeps the historical /api/memory path.
+  listMemories: (params?: {
+    q?: string;
+    top_k?: number;
+    offset?: number;
+    limit?: number;
+  }) => {
+    const search = new URLSearchParams();
+    if (params?.q) search.set("q", params.q);
+    if (params?.top_k !== undefined) {
+      search.set("top_k", String(params.top_k));
+    }
+    if (params?.offset !== undefined) {
+      search.set("offset", String(params.offset));
+    }
+    if (params?.limit !== undefined) {
+      search.set("limit", String(params.limit));
+    }
+    const qs = search.toString();
+    return fetchJSON<MemoryListResponse>(
+      `/api/memories${qs ? `?${qs}` : ""}`,
+    );
+  },
+  getMemoryContentStatus: () =>
+    fetchJSON<MemoryContentStatus>("/api/memories/status"),
+  getMemoryLastInjection: () =>
+    fetchJSON<MemoryLastInjection>("/api/memories/last-injection"),
+  getMemoryById: (memoryId: string) =>
+    fetchJSON<{ ok: boolean; memory: MemoryItem | null }>(
+      `/api/memories/${encodeURIComponent(memoryId)}`,
+    ),
+  addMemoryContent: (content: string) =>
+    fetchJSON<{ ok: boolean; result?: string; event_id?: string }>(
+      "/api/memories",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+  updateMemoryContent: (memoryId: string, text: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/memories/${encodeURIComponent(memoryId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      },
+    ),
+  deleteMemoryContent: (memoryId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/memories/${encodeURIComponent(memoryId)}`,
+      { method: "DELETE" },
+    ),
+
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
   startGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
@@ -1681,6 +1739,61 @@ export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+/**
+ * One stored memory, as the memory-content API shapes it.
+ *
+ * `rrf_score` is present when the hybrid recall fused a vector hit and a
+ * keyword hit — its presence tells the UI the row was found by both
+ * recallers, not just the vector store.
+ */
+export interface MemoryItem {
+  id: string;
+  memory: string;
+  category: string;
+  score: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  source_type?: string | null;
+  source_ref?: string | null;
+  confidence?: number | null;
+  rrf_score?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MemoryListResponse {
+  ok: boolean;
+  count: number;
+  total: number | null;
+  query: string;
+  memories: MemoryItem[];
+  offset: number;
+  limit: number;
+  has_more: boolean;
+  /** "browse" (page through the store) or "search" (semantic/hybrid recall). */
+  mode?: string;
+  /** Set when the memory subsystem is switched off — the list is empty. */
+  disabled?: boolean;
+}
+
+export interface MemoryContentStatus {
+  ok: boolean;
+  enabled: boolean;
+  provider: string;
+  /** "oss" | "self-hosted" | "platform" | null — which backend answered. */
+  source: string | null;
+  /** Exact store-wide count; null when the backend cannot report one. */
+  count: number | null;
+  auto_write: boolean;
+  graph_auto_build: boolean;
+}
+
+export interface MemoryLastInjection {
+  ok: boolean;
+  memories: MemoryItem[];
+  count: number;
+  available: boolean;
 }
 
 export interface MemoryProviderExternalDependency {

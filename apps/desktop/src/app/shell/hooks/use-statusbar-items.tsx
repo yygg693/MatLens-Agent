@@ -11,7 +11,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
-import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
+import { Activity, AlertCircle, Brain, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -48,7 +48,7 @@ import {
 } from '@/store/updates'
 import type { StatusResponse, UsageStats } from '@/types/matlens'
 
-import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
+import { CRON_ROUTE, MEMORY_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
@@ -519,6 +519,14 @@ export function useStatusbarItems({
         label: copy.webhooks,
         to: WEBHOOKS_ROUTE,
         toggleLabel: copy.webhooks,
+        variant: 'action'
+      },
+      {
+        icon: <Brain className="size-3" />,
+        id: 'memory',
+        label: copy.memory,
+        to: MEMORY_ROUTE,
+        toggleLabel: copy.openMemory,
         variant: 'action'
       }
     ],

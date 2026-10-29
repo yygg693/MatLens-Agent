@@ -17,7 +17,6 @@ import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
-import { getMatLensConfigRecord, listAllProfileSessions } from '@/matlens'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -25,6 +24,7 @@ import {
   AppWindow,
   Archive,
   BarChart3,
+  Brain,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -59,6 +59,7 @@ import {
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
+import { getMatLensConfigRecord, listAllProfileSessions } from '@/matlens'
 import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
@@ -91,6 +92,7 @@ import {
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  MEMORY_ROUTE,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
@@ -816,6 +818,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
           { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },
+          {
+            icon: Brain,
+            id: 'nav-memory',
+            keywords: ['memory center', 'memories', 'facts', 'recall'],
+            label: t.memoryCenter.title,
+            run: go(MEMORY_ROUTE)
+          },
           {
             icon: Starmap,
             id: 'nav-starmap',

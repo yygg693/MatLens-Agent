@@ -25,12 +25,12 @@ import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shel
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getLatestSessionMessages } from '@/matlens'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
+import { getLatestSessionMessages } from '@/matlens'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
@@ -144,6 +144,7 @@ import type { WiringActions, WiringApi } from './types'
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
+const MemoryView = lazy(async () => ({ default: (await import('../memory')).MemoryView }))
 const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
 const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
@@ -244,6 +245,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     commandCenterOpen,
     cronOpen,
     currentView,
+    memoryOpen,
     openAgents,
     openCommandCenterSection,
     openStarmap,
@@ -1125,6 +1127,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onClose={closeOverlayToPreviousRoute}
             onOpenSession={sessionId => openSession(sessionId, navigate)}
           />
+        </Suspense>
+      )}
+
+      {memoryOpen && (
+        <Suspense fallback={null}>
+          <MemoryView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 
