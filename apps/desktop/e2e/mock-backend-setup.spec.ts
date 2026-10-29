@@ -15,13 +15,12 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
-
 import {
   type MockBackendFixture,
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: MockBackendFixture | null = null

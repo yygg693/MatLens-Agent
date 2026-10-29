@@ -9,13 +9,12 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
-
 import {
   type NoProviderFixture,
   setupNoProvider,
   waitForOnboarding,
 } from './fixtures'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: NoProviderFixture | null = null

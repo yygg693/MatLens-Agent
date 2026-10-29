@@ -29,8 +29,9 @@
  * the Electron / PlaywrightInternal classes and that tracing still merges.
  */
 
-import { _electron as electron, type BrowserContext } from '@playwright/test'
 import * as crypto from 'node:crypto'
+
+import { type BrowserContext, _electron as electron } from '@playwright/test'
 
 const electronContexts = new Set<BrowserContext>()
 const originalLaunch = electron.launch.bind(electron)
@@ -44,6 +45,7 @@ electron.launch = async (options: any) => {
   // Patch _allContexts so the test runner sees the electron context
   // (didFinishTest cleanup → _stopTracing → stopChunk → merge into trace.zip).
   const pw = (electron as any)._playwright as any
+
   if (pw && !pw.__electronTracingPatched) {
     pw.__electronTracingPatched = true
     const original = pw._allContexts.bind(pw)
@@ -64,6 +66,7 @@ electron.launch = async (options: any) => {
   // in _allContexts(). Since we already started, redirect to startChunk
   // to avoid "Tracing has been already started" errors.
   const tracing = ctx.tracing as any
+
   tracing.start = async (opts: any) => {
     return tracing.startChunk(opts)
   }

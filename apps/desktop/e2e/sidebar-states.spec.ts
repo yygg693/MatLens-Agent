@@ -9,7 +9,7 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import {
   type MockBackendFixture,
@@ -108,6 +108,7 @@ test.describe('sidebar states — background process and subagent', () => {
     const viewportText = await page
       .locator('[data-slot="aui_thread-viewport"]')
       .textContent()
+
     expect(viewportText).toContain(SIDEBAR_TEXTS.finalText)
   })
 })

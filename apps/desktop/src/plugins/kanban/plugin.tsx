@@ -14,10 +14,10 @@ import './kanban.css'
 import {
   cn,
   Codicon,
-  type MatLensPlugin,
   host,
   type KeybindContribution,
   KEYBINDS_AREA,
+  type MatLensPlugin,
   PALETTE_AREA,
   type PaletteContribution,
   type RouteContribution,

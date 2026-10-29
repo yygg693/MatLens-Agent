@@ -8,8 +8,8 @@ import {
 } from '@/app/right-sidebar/terminal/terminal-font'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { saveMatLensConfig } from '@/matlens'
 import { useI18n } from '@/i18n'
+import { saveMatLensConfig } from '@/matlens'
 import { notifyError } from '@/store/notifications'
 import type { MatLensConfigRecord } from '@/types/matlens'
 

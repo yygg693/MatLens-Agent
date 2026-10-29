@@ -1,8 +1,8 @@
 import { backendScopeKey, type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@matlens/shared'
 import { atom } from 'nanostores'
 
-import { MatLensGateway } from '@/matlens'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { MatLensGateway } from '@/matlens'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 

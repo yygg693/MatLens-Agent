@@ -3,13 +3,12 @@
  * must not make the desktop silently drop the prompt before prompt.submit.
  */
 
-import { test, expect } from './test'
-
 import {
   type MockBackendFixture,
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
+import { expect, test } from './test'
 
 const PROMPT = 'E2E route token drift must still submit this prompt.'
 
@@ -38,6 +37,7 @@ test('submits while same-chat search tokens churn during new-session creation', 
   // user chat switch and aborted before prompt.submit.
   await page.evaluate(() => {
     let revision = 0
+
     const interval = window.setInterval(() => {
       const pathname = window.location.hash.slice(1).split(/[?#]/, 1)[0] || '/new'
       window.location.hash = `${pathname}?e2e-route-churn=${revision++}`

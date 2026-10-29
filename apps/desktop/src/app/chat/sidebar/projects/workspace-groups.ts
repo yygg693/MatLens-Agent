@@ -1,6 +1,6 @@
 import type { MatLensGitWorktree } from '@/global'
-import type { ProjectInfo, SessionInfo } from '@/matlens'
 import { normalize } from '@/lib/text'
+import type { ProjectInfo, SessionInfo } from '@/matlens'
 
 import { rankSessions } from '../order'
 

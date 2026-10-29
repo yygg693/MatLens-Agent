@@ -16,6 +16,18 @@ logs/
 .matlens-*
 vendor/
 
+# ---- Node ----
+node_modules/
+.npm/
+*.tsbuildinfo
+
+# ---- 桌面端构建产物 ----
+apps/desktop/dist/
+apps/desktop/release/
+
+# ---- 工作区临时数据 ----
+.workbuddy/tmp/
+
 # ---- 本地备份与一次性产物（2026-10-16）----
 _backup*/
 _archive/

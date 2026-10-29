@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
 
-import type { MatLensGateway } from '@/matlens'
 import type { IconComponent } from '@/lib/icons'
+import type { MatLensGateway } from '@/matlens'
 import type { EnvVarInfo } from '@/types/matlens'
 
 export type SettingsView =

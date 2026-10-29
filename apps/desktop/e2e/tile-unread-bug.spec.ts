@@ -224,12 +224,14 @@ test.describe.skip('sidebar states — split (visible) unread bug (RED)', () => 
     const targetX = wsBox!.x + wsBox!.width - 20
     const targetY = wsBox!.y + wsBox!.height / 2
     const steps = 10
+
     for (let i = 1; i <= steps; i++) {
       const x = rowBox!.x + rowBox!.width / 2 + (targetX - (rowBox!.x + rowBox!.width / 2)) * (i / steps)
       const y = rowBox!.y + rowBox!.height / 2 + (targetY - (rowBox!.y + rowBox!.height / 2)) * (i / steps)
       await page.mouse.move(x, y)
       await page.waitForTimeout(30)
     }
+
     await page.mouse.up()
     await page.waitForTimeout(2000)
 

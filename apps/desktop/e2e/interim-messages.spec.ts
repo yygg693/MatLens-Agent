@@ -29,7 +29,7 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import {
   type MockBackendFixture,
@@ -90,11 +90,13 @@ async function countTranscriptMessagesContaining(page: Page, text: string): Prom
   return page.evaluate(
     (search) => {
       const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+
       if (!viewport) {
         return 0
       }
 
       let count = 0
+
       const walker = document.createTreeWalker(
         viewport,
         NodeFilter.SHOW_ELEMENT,
@@ -102,23 +104,29 @@ async function countTranscriptMessagesContaining(page: Page, text: string): Prom
           acceptNode: (node) => {
             const el = node as HTMLElement
             const directText = el.textContent ?? ''
+
             if (!directText.includes(search)) {
               return NodeFilter.FILTER_SKIP
             }
+
             // Only count leaf-ish elements to avoid double-counting.
             const hasChildWithText = Array.from(el.children).some(
               (child) => (child.textContent ?? '').includes(search),
             )
+
             if (hasChildWithText) {
               return NodeFilter.FILTER_SKIP
             }
+
             return NodeFilter.FILTER_ACCEPT
           },
         },
       )
+
       while (walker.nextNode()) {
         count++
       }
+
       return count
     },
     text,

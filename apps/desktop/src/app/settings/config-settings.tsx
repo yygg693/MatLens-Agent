@@ -6,9 +6,9 @@ import { useSearchParams } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { getElevenLabsVoices, getMatLensConfigSchema, saveMatLensConfig } from '@/matlens'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { getElevenLabsVoices, getMatLensConfigSchema, saveMatLensConfig } from '@/matlens'
 import {
   $dataUrlReadMaxMb,
   clampDataUrlReadMaxMb,

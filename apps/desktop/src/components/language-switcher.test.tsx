@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { MatLensConfigRecord } from '@/matlens'
 import { type I18nConfigClient, I18nProvider } from '@/i18n'
+import type { MatLensConfigRecord } from '@/matlens'
 
 import { LanguageSwitcher } from './language-switcher'
 

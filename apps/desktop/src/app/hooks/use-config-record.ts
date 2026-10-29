@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getMatLensConfigRecord } from '@/matlens'
 import { queryClient, writeCache } from '@/lib/query-client'
+import { getMatLensConfigRecord } from '@/matlens'
 import { normalizeProfileKey } from '@/store/profile'
 import type { MatLensConfigRecord } from '@/types/matlens'
 

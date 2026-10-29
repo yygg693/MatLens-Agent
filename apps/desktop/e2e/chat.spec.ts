@@ -8,10 +8,9 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
-
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { BLOCKING_CLARIFY_QUESTION, BLOCKING_CLARIFY_TRIGGER } from './mock-server'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: MockBackendFixture | null = null
@@ -92,6 +91,7 @@ test.describe('chat interaction with mock backend', () => {
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
     const queue = page.locator('[data-slot="composer-root"] button[aria-label="Queue message"]')
     const dictation = page.locator('[data-slot="composer-root"] button[aria-label="Voice dictation"]')
+
     const speakReplies = page.locator(
       '[data-slot="composer-root"] button[aria-label="Read replies aloud"], [data-slot="composer-root"] button[aria-label="Stop reading replies aloud"]'
     )
@@ -111,12 +111,15 @@ test.describe('chat interaction with mock backend', () => {
     await expect(speakReplies).toBeVisible()
     await expect(queue).toBeVisible()
     await expect(queue.locator('svg.tabler-icon-layers-intersect-2')).toBeVisible()
+
     const controlLabels = await page
       .locator('[data-slot="composer-root"] button')
       .evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-label')))
+
     const speakRepliesIndex = controlLabels.findIndex(
       label => label === 'Read replies aloud' || label === 'Stop reading replies aloud'
     )
+
     expect(controlLabels.indexOf('Voice dictation')).toBeLessThan(speakRepliesIndex)
     expect(speakRepliesIndex).toBeLessThan(controlLabels.indexOf('Queue message'))
     expect(controlLabels.indexOf('Queue message')).toBeLessThan(

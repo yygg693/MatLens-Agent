@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 
-import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/matlens'
 import { toChatMessages } from '@/lib/chat-messages'
+import { getLatestSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/matlens'
 import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/matlens'
 

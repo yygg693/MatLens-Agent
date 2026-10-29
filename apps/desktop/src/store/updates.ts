@@ -14,9 +14,9 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
-import { checkMatLensUpdate, getActionStatus, updateMatLens } from '@/matlens'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { checkMatLensUpdate, getActionStatus, updateMatLens } from '@/matlens'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/matlens'

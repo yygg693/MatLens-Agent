@@ -2,7 +2,7 @@
  * E2E coverage for session compression, which rotates a live backend session.
  */
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { MOCK_REPLY, receivedUserTexts, restartMockServer } from './mock-server'
