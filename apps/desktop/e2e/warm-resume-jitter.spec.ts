@@ -30,19 +30,18 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
-
 import {
+  buildAppEnv,
+  createSandbox,
+  launchDesktop,
   type MockBackendFixture,
   waitForAppReady,
-  createSandbox,
-  writeMockProviderConfig,
   writeEnvFile,
-  buildAppEnv,
-  launchDesktop,
+  writeMockProviderConfig,
 } from './fixtures'
 import { startMockServer } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
+import { expect, test } from './test'
 
 const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
 
@@ -58,11 +57,13 @@ const RNG_SEED = 42
 /** Mulberry32 — tiny deterministic PRNG. */
 function mulberry32(seed: number): () => number {
   let a = seed
+
   return () => {
     a |= 0
     a = (a + 0x6d2b79f5) | 0
     let t = Math.imul(a ^ (a >>> 15), 1 | a)
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
@@ -71,9 +72,11 @@ function mulberry32(seed: number): () => number {
 function gibberish(rng: () => number): string {
   const len = 30 + Math.floor(rng() * 20)
   let s = ''
+
   for (let i = 0; i < len; i++) {
     s += String.fromCharCode(97 + Math.floor(rng() * 26))
   }
+
   return s
 }
 
@@ -115,6 +118,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   // 3. Produce all 16 user/assistant pairs through the real TUI gateway,
   // AIAgent, mock provider, and SessionDB persistence path before desktop starts.
   const builder = await RealSessionBuilder.start(sandbox.matlensHome)
+
   try {
     await builder.createSession({ title: SESSION_TITLE, turns: generateSessionTurns() })
   } finally {
@@ -167,21 +171,26 @@ async function installRenderCounter(
 ): Promise<void> {
   await page.evaluate(([visibleSelector, allSelector, expected]: [string, string, string | undefined]) => {
     const surfaces = [...document.querySelectorAll(expected ? allSelector : visibleSelector)]
+
     const surface = expected
       ? surfaces.find(candidate =>
           (candidate.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
         )
       : surfaces.at(-1)
+
     const viewport = surface?.querySelector('[data-slot="aui_thread-viewport"]')
+
     if (!viewport) {
       throw new Error('Thread viewport not found before warm resume')
     }
 
     const state = { bursts: 0, mutations: 0, timeline: [] as number[], stopped: false, reconciles: 0 }
+
     const debugWindow = window as unknown as {
       __RENDER_COUNT__: typeof state
       __RENDER_VIEWPORT__: Element
     }
+
     debugWindow.__RENDER_COUNT__ = state
     debugWindow.__RENDER_VIEWPORT__ = viewport
 
@@ -190,6 +199,7 @@ async function installRenderCounter(
 
     const flush = () => {
       flushTimer = null
+
       if (currentBatch > 0 && !state.stopped) {
         state.bursts += 1
         state.timeline.push(currentBatch)
@@ -198,17 +208,21 @@ async function installRenderCounter(
     }
 
     const observer = new MutationObserver(records => {
-      if (state.stopped) return
+      if (state.stopped) {return}
       let batchAdded = 0
+
       for (const record of records) {
         state.mutations += 1
+
         if (record.type === 'childList' && record.addedNodes.length > 0) {
           batchAdded += 1
         }
       }
+
       if (batchAdded > 0) {
         currentBatch += batchAdded
-        if (flushTimer) clearTimeout(flushTimer)
+
+        if (flushTimer) {clearTimeout(flushTimer)}
         flushTimer = setTimeout(flush, 5)
       }
     })
@@ -230,17 +244,22 @@ async function installRenderCounter(
     const contentEl = viewport.querySelector('[data-slot="aui_thread-content"]') ?? viewport
     let lastFirstMsgText = ''
     let hasMessages = false
+
     const pollInterval = setInterval(() => {
       if (state.stopped) {
         clearInterval(pollInterval)
+
         return
       }
+
       const firstMsg = contentEl.querySelector('[data-role="message"], [data-message-id]')
       const firstMsgText = firstMsg?.textContent ?? ''
+
       if (firstMsgText && firstMsgText !== lastFirstMsgText) {
         if (hasMessages) {
           state.reconciles = (state.reconciles ?? 0) + 1
         }
+
         lastFirstMsgText = firstMsgText
         hasMessages = true
       }
@@ -305,9 +324,11 @@ async function readRenderCount(page: import('@playwright/test').Page): Promise<{
     type RenderCount = { bursts: number; mutations: number; timeline: number[]; stopped: boolean; reconciles: number }
     const w = window as unknown as { __RENDER_COUNT__?: RenderCount }
     const rc = w.__RENDER_COUNT__
+
     if (rc) {
       rc.stopped = true
     }
+
     return rc ? { bursts: rc.bursts, mutations: rc.mutations, timeline: rc.timeline, reconciles: rc.reconciles } : null
   })
 }
@@ -360,6 +381,7 @@ test('tab reactivation preserves the mounted transcript without repainting', asy
     .locator('[data-slot="sidebar"] button')
     .filter({ hasText: SESSION_TITLE })
     .first()
+
   await sessionRow.waitFor({ state: 'visible', timeout: 60_000 })
 
   // Step 1: Cold resume — click the session row to load it.
@@ -407,6 +429,7 @@ test('warm-route resume after background inference completes (no jitter)', async
     .locator('[data-slot="sidebar"] button')
     .filter({ hasText: SESSION_TITLE })
     .first()
+
   await sessionRow.waitFor({ state: 'visible', timeout: 60_000 })
 
   // Step 1: Cold resume — populate the warm cache.
@@ -447,6 +470,7 @@ test('warm-route resume after background inference completes (no jitter)', async
   await page.waitForFunction(
     () => {
       const w = window as unknown as { __RENDER_COUNT__?: { bursts: number } }
+
       return Boolean(w.__RENDER_COUNT__ && w.__RENDER_COUNT__.bursts > 0)
     },
     undefined,

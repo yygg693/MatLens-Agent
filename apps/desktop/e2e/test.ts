@@ -13,7 +13,7 @@
  * per-spec setup needed.
  */
 
-import { test as base, expect, type Page, type ElectronApplication, _electron } from '@playwright/test'
+import { _electron, test as base, type ElectronApplication, expect, type Page } from '@playwright/test'
 
 // Track error messages per test so afterEach can assert + report.
 const seenErrors: string[] = []
@@ -51,6 +51,7 @@ export function installErrorBannerGuard(page: Page): void {
   // We inject this via addInitScript so it runs before any app code.
   page.addInitScript(() => {
     const seen: string[] = []
+
     ;(window as unknown as { __ERROR_BANNER_GUARD__?: string[] }).__ERROR_BANNER_GUARD__ = seen
 
     const observer = new MutationObserver(() => {
@@ -144,6 +145,7 @@ base.afterEach(async ({}, testInfo) => {
   if (wasAllowed) {
     // Test opted out — clear any collected errors without asserting.
     seenErrors.length = 0
+
     return
   }
 
@@ -163,4 +165,4 @@ base.afterAll(async () => {
   activePage = null
 })
 
-export { expect, type Page, type ElectronApplication, _electron }
+export { _electron, type ElectronApplication, expect, type Page }

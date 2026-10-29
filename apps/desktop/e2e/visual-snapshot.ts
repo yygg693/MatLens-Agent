@@ -86,16 +86,19 @@ export async function expectVisualSnapshot(
     // Also write to the output dir so CI artifacts include the screenshot.
     fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
     console.log(`[visual-baseline] updated ${baselinePath}`)
+
     return
   }
 
   if (!fs.existsSync(baselinePath)) {
     fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
     console.log(`[visual-diff] ${name ?? '(unnamed)'} — no baseline available`)
+
     return
   }
 
   const expected = fs.readFileSync(baselinePath)
+
   const comparison = await app.evaluate(
     ({ nativeImage }, images) => {
       const actualImage = nativeImage.createFromBuffer(Buffer.from(images.actual, 'base64'))
@@ -123,6 +126,7 @@ export async function expectVisualSnapshot(
           mismatched++
           diffPixels[i + 2] = 255
         }
+
         diffPixels[i + 3] = 255
       }
 

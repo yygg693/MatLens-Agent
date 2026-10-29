@@ -8,8 +8,8 @@ import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/matlens'
 
-import type { MatLensGateway } from '../matlens'
 import { cn } from '../lib/utils'
+import type { MatLensGateway } from '../matlens'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'

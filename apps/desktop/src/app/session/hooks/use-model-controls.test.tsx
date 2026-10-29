@@ -2,8 +2,8 @@ import { QueryClient } from '@tanstack/react-query'
 import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getGlobalModelInfo } from '@/matlens'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import { getGlobalModelInfo } from '@/matlens'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,

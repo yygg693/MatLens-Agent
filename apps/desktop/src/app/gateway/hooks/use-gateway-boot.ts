@@ -2,10 +2,10 @@ import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@matlens/shared'
 import { useEffect, useRef } from 'react'
 
 import type { MatLensConnection } from '@/global'
-import { MatLensGateway } from '@/matlens'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { MatLensGateway } from '@/matlens'
 import {
   $desktopBoot,
   applyDesktopBootProgress,

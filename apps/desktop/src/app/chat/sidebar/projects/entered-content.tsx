@@ -13,9 +13,9 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import type { MatLensGitWorktree } from '@/global'
-import type { SessionInfo } from '@/matlens'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
+import type { SessionInfo } from '@/matlens'
 import { $dismissedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'

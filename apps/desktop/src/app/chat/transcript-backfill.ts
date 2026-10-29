@@ -15,8 +15,8 @@
  * drift on the next page.
  */
 
-import { getOlderSessionMessages } from '@/matlens'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { getOlderSessionMessages } from '@/matlens'
 import { recordTranscriptBackfillPage, transcriptTailState } from '@/store/transcript-tail'
 
 /** Older rows likely exist beyond what the in-memory store holds. */

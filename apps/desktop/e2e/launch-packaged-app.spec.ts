@@ -1,11 +1,10 @@
-import { expect, test } from './test'
-
 import {
   PACKAGED_BINARY_PATH,
   type PackagedAppFixture,
   packagedBinaryExists,
   setupPackagedApp,
 } from './fixtures'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 /**
