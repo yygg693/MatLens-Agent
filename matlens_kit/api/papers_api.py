@@ -396,6 +396,36 @@ def _make_agent_runner(pid: str, cancel_key: Optional[str] = None):
         }
         # 写前注入引用白名单（write/outline 步只能引用 search 步核验的 [1..N]）
         inject_whitelist(ctx, refs_list)
+
+        # 写作步额外检索本地知识库（2026-10-29）：
+        # 检索步抓到的正文进了库，但写作时靠 RAG 未必命中刚抓的那一篇 ——
+        # 这里按**当前章节**定向检索，把相关原文片段直接喂进 prompt。
+        kb_ctx_block = ""
+        if stage_ == "write":
+            try:
+                from matlens_kit.paper.kb_context import build_writing_context
+
+                kbc = build_writing_context(
+                    topic=ctx.get("topic", ""),
+                    outline_text=ctx.get("outline_text", ""),
+                    section=ctx.get("section", ""),
+                    existing_text=ctx.get("existing_text", ""),
+                )
+                kb_ctx_block = kbc.get("block") or kbc.get("note") or ""
+                ctx["kb_context"] = kb_ctx_block
+                if kbc.get("count"):
+                    cb("stream_text", {
+                        "text": (f"📚 本地知识库命中 {kbc['count']} 段相关原文"
+                                 f"（{kbc.get('kb') or '本地库'}）\n")
+                    })
+                else:
+                    cb("stream_text", {
+                        "text": ("📚 本地知识库未命中本节相关材料，"
+                                 "将仅依据核验文献题录写作\n")
+                    })
+            except Exception as e:  # noqa: BLE001
+                cb("stream_text", {"text": f"⚠️ 本地库检索跳过：{type(e).__name__}\n"})
+
         prompt = render_prompt(stage_, ctx)
         texts: list = []
 
