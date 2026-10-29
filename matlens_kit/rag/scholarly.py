@@ -98,8 +98,22 @@ def _http_get(url: str, timeout: float = _DEFAULT_TIMEOUT, retries: int = 1,
     raise last
 
 
+#: 自检模式标志。为 True 时 ``_get_json`` **不重试** ——
+#: 自检要快速反馈，重试会把 5s 超时翻倍成 10.8s（实测整体自检 25s）。
+#: 真实检索仍应重试 —— 那时多花几秒换来结果更值。
+_PROBE_MODE = False
+
+
+def _set_probe_mode(on: bool) -> None:
+    """切换自检模式（免重试）。由 source_health 模块在探测前调用。"""
+    global _PROBE_MODE
+    _PROBE_MODE = bool(on)
+
+
 def _get_json(url: str, timeout: float = _DEFAULT_TIMEOUT, retries: int = 1,
               headers: Optional[Dict[str, str]] = None) -> Any:
+    if _PROBE_MODE:
+        retries = 0
     return json.loads(_http_get(url, timeout=timeout, retries=retries, headers=headers).decode("utf-8", "replace"))
 
 

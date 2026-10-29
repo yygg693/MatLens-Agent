@@ -109,6 +109,10 @@ export async function loadKb() {
         .catch(() => { _renderSrcList(); });
     } else {
       _renderSrcList();
+      // 左栏刚渲染出源目录（含健康圆点），把自检状态刷上去
+      import('./kb_health.js')
+        .then(m => { if (m.resyncHealthDots) m.resyncHealthDots(); })
+        .catch(() => {});
     }
     if (S.kb && S.kb.name) {
       loadDocs(S.kb.name);

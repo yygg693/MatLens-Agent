@@ -31,6 +31,7 @@ import {
 import { loadTools, openToolCatalog, closeToolCatalog, bindToolsPage } from './tools.js';
 import { bindCiteImport } from './kb_cite.js';
 import { bindDatasetPane, loadDatasetSources } from './kb_dataset.js';
+import { initHealthPanel } from './kb_health.js';
 import { initChatUI, renderEmptyState } from './chat_ui.js';
 // 2026-10-15 重做：右栏四panel 全部接真实数据（原三块是死占位）
 import { initRightPanel, switchRightTab, refreshRightPanel } from './chat_right.js';
@@ -175,6 +176,8 @@ function bindEvents() {
   bindDatasetPane();
   // 预取数据集源目录，让 tab 上的数字一开始就有（否则首次点击前是 0）
   loadDatasetSources();
+  // 源健康面板（读后端缓存，不会真的重新探测）
+  initHealthPanel();
   const kbReadClose = $id('kb-read-close');
   if (kbReadClose) kbReadClose.addEventListener('click', closeDocReader);
   const kbReadMask = $id('kb-read-mask');
