@@ -48,7 +48,7 @@ export async function loadNetworkPane() {
   }
   // 配置与检测**并发**发起：proxy-check 本身要 3-4s（要探测直连与代理两个出口），
   // 若串行等待会明显卡住面板首屏；两者互不依赖。
-  await Promise.all([_npFetchConfig(), _npRefreshStatus(), _npLoadBlocked()]);
+  await Promise.all([_npFetchConfig(), _npRefreshStatus(), _npLoadBlocked(), _npLoadCacheStats()]);
 }
 
 async function _npFetchConfig() {
@@ -202,6 +202,12 @@ function _npBind() {
   bindToggle('np-enabled', 'proxy_enabled', '代理');
   bindToggle('np-rotate-enabled', 'rotate_enabled', '自动换 IP');
 
+  // 抓取缓存：清理 / 刷新统计
+  const purgeBtn = $id('np-cache-purge');
+  if (purgeBtn) purgeBtn.onclick = () => _npPurgeCache();
+  const cacheRefresh = $id('np-cache-refresh');
+  if (cacheRefresh) cacheRefresh.onclick = () => _npLoadCacheStats();
+
   const bindInput = (id, key) => {
     const el = $id(id);
     if (!el) return;
@@ -236,4 +242,72 @@ function _npBind() {
   };
   const bl = $id('np-btn-blocked');
   if (bl) bl.onclick = () => _npLoadBlocked();
+}
+
+
+/* ── 抓取缓存统计（2026-10-29）────────────────────────────
+ * 此前缓存「用不用得上」用户完全看不到：不知道命中率、占多少磁盘、
+ * 哪些已过期。统计只取 host 维度（脱敏的意义不能被统计接口抵消）。
+ * ────────────────────────────────────────────────────────── */
+async function _npLoadCacheStats() {
+  const box = $id('np-cache-stats');
+  if (!box) return;
+  try {
+    const d = await jget('/api/web/cache/stats');
+    const rt = d.runtime || {};
+    const usable = d.usable_rate;
+    const hitRate = rt.hit_rate;
+
+    let h = '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:8px">';
+    h += '<span>缓存条目 <b>' + (d.total || 0) + '</b></span>';
+    h += '<span>有效期内 <b style="color:var(--ml-ok)">' + (d.fresh || 0) + '</b></span>';
+    if (d.stale) h += '<span>已过期 <b style="color:var(--ml-warn)">' + d.stale + '</b></span>';
+    h += '<span>占用 <b>' + esc(d.size_human || '0 B') + '</b></span>';
+    if (hitRate != null) {
+      h += '<span>本次运行命中率 <b style="color:' +
+        (hitRate >= 0.5 ? 'var(--ml-ok)' : 'var(--ml-warn)') + '">' +
+        Math.round(hitRate * 100) + '%</b></span>';
+    }
+    h += '</div>';
+
+    if (d.hosts && d.hosts.length) {
+      h += '<div style="font-size:11px;color:var(--ml-text-faint);margin-bottom:6px">按站点（只统计域名，不含路径与参数）：</div>';
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+      h += d.hosts.map(x => '<span class="np-host">' + esc(x.host) +
+        ' <b style="opacity:.7">' + x.n + '</b></span>').join('');
+      h += '</div>';
+    }
+
+    if (!d.total) {
+      h += '<div style="color:var(--ml-text-faint);margin-top:6px">' +
+        '缓存还是空的 —— 抓过一次网页后这里会出现统计。</div>';
+    }
+    box.innerHTML = h;
+
+    const hint = $id('np-cache-hint');
+    if (hint) {
+      hint.textContent = d.stale
+        ? ('有 ' + d.stale + ' 条已过期（占 ' + d.size_human + '），清理后不影响知识库与已导入文献')
+        : '只删已过期的缓存条目，不影响知识库与已导入文献';
+    }
+  } catch (e) {
+    box.textContent = '读取失败：' + (e.message || e);
+  }
+}
+
+/** 清理过期缓存条目。 */
+async function _npPurgeCache() {
+  const btn = $id('np-cache-purge');
+  if (btn) { btn.disabled = true; btn.textContent = '清理中…'; }
+  try {
+    const r = await jpost('/api/web/cache/purge', {});
+    toast(r && r.removed
+      ? ('已清理 ' + r.removed + ' 条过期缓存，释放 ' + (r.freed_human || '0 B'))
+      : '没有过期条目需要清理', 'ok');
+    await _npLoadCacheStats();
+  } catch (e) {
+    toast('清理失败：' + (e.message || e), 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '清理过期条目'; }
+  }
 }

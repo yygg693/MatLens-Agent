@@ -1443,9 +1443,21 @@ def fetch_cached(url: str, max_age_h: float = 24.0, **kw) -> FetchResult:
                 out["url"] = real
                 out["url_masked"] = masked
                 out["cache"] = f"命中缓存（{age:.1f}h 前）"
+                try:
+                    from matlens_kit.web.cache_stats import record_hit
+
+                    record_hit()
+                except Exception:
+                    pass
                 return out
         except Exception:
             pass
+    try:
+        from matlens_kit.web.cache_stats import record_miss
+
+        record_miss()
+    except Exception:
+        pass
     res = fetch(url, **kw)
     try:
         stored = dict(res)
@@ -1453,6 +1465,12 @@ def fetch_cached(url: str, max_age_h: float = 24.0, **kw) -> FetchResult:
         stored["url"] = _mask_url(url)
         with open(path, "w", encoding="utf-8") as f:
             _json.dump(stored, f, ensure_ascii=False)
+        try:
+            from matlens_kit.web.cache_stats import record_store
+
+            record_store()
+        except Exception:
+            pass
     except Exception:
         pass
     return res

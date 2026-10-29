@@ -20,7 +20,7 @@ import re
 import time
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 _router = APIRouter(prefix="/api/web", tags=["web"])
 
@@ -348,6 +348,45 @@ def resolve_oa_fulltext(payload: Dict[str, Any] = None) -> Dict[str, Any]:
         out["note"] = f"已抓取正文 {len(text)} 字（未入库，可指定 kb 参数直接沉淀）"
 
     return out
+
+
+# ────────────────────────────────────────────────────────────
+# 抓取缓存统计（2026-10-29）
+#
+# 此前缓存「用不用得上」用户完全看不到：不知道命中率、占多少磁盘、
+# 哪些已过期。统计只取 host 维度，不暴露完整 URL（脱敏的意义不能被
+# 统计接口抵消掉）。
+# ────────────────────────────────────────────────────────────
+@_router.get("/cache/stats")
+def cache_stats(ttl_hours: float = Query(24.0)) -> Dict[str, Any]:
+    """抓取缓存统计：命中率 / 条目数 / 磁盘占用 / 过期分布。"""
+    from matlens_kit.web import cache_stats as cs
+
+    try:
+        return cs.stats(ttl_h=float(ttl_hours))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"缓存统计失败：{str(e)[:140]}")
+
+
+@_router.post("/cache/purge")
+def cache_purge(payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """清理抓取缓存。
+
+    body: ``{all?: bool, ttl_hours?: float}`` —— 默认只删过期条目。
+    ⚠️ 只删缓存文件，**不碰知识库与已导入文档**。
+    """
+    from matlens_kit.web import cache_stats as cs
+
+    payload = payload or {}
+    all_items = bool(payload.get("all"))
+    try:
+        ttl = float(payload.get("ttl_hours") or cs.DEFAULT_TTL_H)
+    except (TypeError, ValueError):
+        ttl = cs.DEFAULT_TTL_H
+    try:
+        return cs.purge(stale_only=not all_items, ttl_h=ttl)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"清理失败：{str(e)[:140]}")
 
 
 @_router.post("/to-kb")
