@@ -196,7 +196,7 @@ const SWITCH = `
 
 const cmd = process.argv[2] ?? 'status'
 const arg = process.argv[3]
-const { evaluate, close } = await attach()
+const { evaluate, close, send } = await attach()
 
 try {
   if (cmd === 'status') {
