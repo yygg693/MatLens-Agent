@@ -482,6 +482,156 @@ def _load_docs(kb) -> List[Dict[str, Any]]:
         return []
 
 
+# ────────────────────────────────────────────────────────────
+# 数据集源（2026-10-29 新增）
+#
+# 论文源只能找到「文献」，但材料实验的关键数据（SCAPS 模拟输出、DFT 结果、
+# XRD 原始谱、电池循环数据）大量发布在公开数据集仓库，且这些仓库有**公开 API**
+# 与开放许可证 —— 与知网/维普完全不同，属于合法可编程访问。
+# ────────────────────────────────────────────────────────────
+@_router.get("/datasets/sources")
+def list_dataset_sources() -> Dict[str, Any]:
+    """数据集源目录（供知识库页「数据集」栏渲染）。"""
+    from matlens_kit.rag import datasets as ds
+
+    return {
+        "kind": "dataset",
+        "label": "开放数据集",
+        "desc": "检索公开数据集仓库（Zenodo 等）。材料实验的模拟输出与原始数据"
+                "常发布于此，而非论文正文。",
+        "items": list(ds.DATASET_SOURCE_INDEX.values()),
+        "defaults": ds.DEFAULT_DATASET_SOURCES,
+        "note": "Zenodo 数据集通常带 CC-BY / CC0 开放许可，可自由引用与再分发。"
+                "HuggingFace 国内直连不稳定，默认不勾选。",
+    }
+
+
+@_router.post("/datasets/search")
+def search_datasets(payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """检索开放数据集。"""
+    from matlens_kit.rag import datasets as ds
+
+    payload = payload or {}
+    q = (payload.get("query") or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="query 必填")
+    sources = payload.get("sources") or ds.DEFAULT_DATASET_SOURCES
+    per = int(payload.get("per_source") or 6)
+    timeout = float(payload.get("timeout") or 15.0)
+
+    res = ds.search_datasets(q, sources=sources, per_source=per, timeout=timeout)
+    if not res.get("ok") and res.get("error"):
+        return res
+    return res
+
+
+@_router.get("/datasets/{record_id}/files")
+def dataset_files(record_id: str) -> Dict[str, Any]:
+    """取某条数据集记录的完整文件清单（导入前确认体积用）。
+
+    只读元数据，**不下载** —— 数据集动辄上百 MB，是否下载应由用户显式决定。
+    """
+    from matlens_kit.rag import datasets as ds
+
+    try:
+        return ds.fetch_record_files(record_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"读取数据集记录失败：{str(e)[:120]}")
+
+
+@_router.post("/datasets/import")
+def import_dataset(payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """把数据集的**元数据**沉淀进知识库。
+
+    ⚠️ 只导入元数据（题名/描述/关键词/许可/文件清单），**不自动下载文件**：
+    数据集通常几十到几百 MB，且用户未必需要全部文件。
+    导入后用户可在界面上看到文件清单与直链，自行决定下载哪些。
+
+    想让正文可检索？下载 PDF 后走普通上传通道即可。
+    """
+    from matlens_kit.rag import datasets as ds
+    from matlens_cli.config import get_matlens_home
+
+    payload = payload or {}
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name 必填")
+    mgr = _get_manager()
+    if name not in mgr.list_kbs():
+        raise HTTPException(status_code=404, detail=f"知识库 {name} 不存在")
+    kb = mgr.get(name)
+
+    items = payload.get("items") or []
+    if not items:
+        raise HTTPException(status_code=400, detail="items 为空")
+
+    out_dir = get_matlens_home() / "uploads" / "datasets" / time.strftime("%Y%m%d")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    paths: List[str] = []
+    n = 0
+    for it in items:
+        title = (it.get("title") or "").strip()
+        if not title:
+            continue
+        doi = str(it.get("doi") or "")
+        # 文件名带 DOI 作稳定标识：底层按文件名去重，重复导入才会被识别
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title).strip()
+        safe = re.sub(r"\s+", " ", safe)[:56].rstrip(". ") or "untitled"
+        doi_key = re.sub(r"[^A-Za-z0-9]", "_", doi)
+        fn = f"{n + 1:02d}_{safe}" + (f"__{doi_key}" if doi_key else "") + ".md"
+
+        lines = [f"# {title}", ""]
+        if it.get("authors"):
+            lines.append("- 作者：" + str(it["authors"]))
+        if it.get("source"):
+            lines.append("- 来源：" + str(it["source"]))
+        if it.get("year"):
+            lines.append("- 年份：" + str(it["year"]))
+        if doi:
+            lines.append("- DOI：" + doi)
+        if it.get("license"):
+            lines.append("- 许可：" + str(it["license"]))
+        if it.get("landing_page") or it.get("url"):
+            lines.append("- 页面：" + str(it.get("landing_page") or it.get("url")))
+        kw = it.get("keywords") or []
+        if kw:
+            lines.append("- 关键词：" + "，".join(str(k) for k in kw[:10]))
+        files = it.get("files") or []
+        if files:
+            lines += ["", "## 文件清单", ""]
+            for f in files[:30]:
+                lines.append(f"- {f.get('key', '')}（{f.get('size_human', '')}）"
+                             f" {f.get('url', '')}")
+        desc = (it.get("description") or it.get("abstract") or "").strip()
+        if desc:
+            lines += ["", "## 描述", "", desc[:3000]]
+        lines += ["", "> 由 MatLens 从开放数据集仓库导入的元数据（非文件内容）。"]
+
+        try:
+            p = out_dir / fn
+            p.write_text("\n".join(lines), encoding="utf-8")
+        except OSError:
+            continue
+        paths.append(str(p))
+        n += 1
+
+    if not paths:
+        raise HTTPException(status_code=400, detail="数据集条目缺少题名，无法写入")
+
+    try:
+        add = kb.add_documents(paths)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"索引写入失败：{e}")
+
+    return {
+        "ok": True, "name": name, "imported": n,
+        "note": "已导入数据集元数据（含文件清单与许可）。"
+                "如需让文件内容可被检索，请下载后走普通上传通道。",
+        **add,
+    }
+
+
 @_router.post("/{name}/import-citations")
 def import_citations(name: str, payload: Dict[str, Any] = None) -> Dict[str, Any]:
     """导入题录文件（RIS / BibTeX / EndNote / RefWorks）。
