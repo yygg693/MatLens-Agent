@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { parseDefaultDistro, parseWslRegistry, resolveDefaultWslDistro, resolvePickerDefaultPath, resetWslProbeCache, wslPosixToWindowsAccessible } from './wsl-path-bridge'
+import { parseDefaultDistro, parseWslRegistry, resetWslProbeCache, resolveDefaultWslDistro, resolvePickerDefaultPath, wslPosixToWindowsAccessible } from './wsl-path-bridge'
 
 test('parseDefaultDistro reads the first distro from clean utf-8 output', () => {
   assert.equal(parseDefaultDistro('Ubuntu\nDebian\n'), 'Ubuntu')
@@ -87,6 +87,7 @@ test('resolveDefaultWslDistro never runs wsl.exe — the registry is the only so
   resetWslProbeCache()
 
   const asked: string[] = []
+
   const exec = (file: string) => {
     asked.push(file)
 

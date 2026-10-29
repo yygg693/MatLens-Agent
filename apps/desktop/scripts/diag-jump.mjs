@@ -100,6 +100,8 @@ const events = JSON.parse(await evalP(`JSON.stringify(window.__threadEvents || [
 console.log(`\n${events.length} events:`)
 for (const e of events) {
   const t = String(e.t.toFixed(0)).padStart(5)
+  // `t` is destructured out so it is not printed twice (already shown as `tms`).
+  // eslint-disable-next-line no-unused-vars
   const { kind, t: _t, ...rest } = e
   console.log(`  ${t}ms  ${kind.padEnd(12)} ${JSON.stringify(rest)}`)
 }

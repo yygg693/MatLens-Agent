@@ -41,6 +41,30 @@ export default [
     }
   },
   {
+    // Playwright e2e specs follow the framework's own idioms, which several
+    // renderer-oriented rules flag as false positives:
+    //
+    //   no-empty-pattern — `test('...', async ({}, testInfo) => {...})` is
+    //     Playwright's documented way to take the testInfo argument without
+    //     pulling in any fixture. The empty destructure is a placeholder, not
+    //     a mistake.
+    //   consistent-type-imports — the specs annotate helper parameters as
+    //     `page: import('@playwright/test').Page` so a helper file can stay
+    //     free of a top-level Playwright import.
+    //   rules-of-hooks — Playwright's fixture override reads `async ({ page },
+    //     use) => {...}`, where `use` is the fixture callback. The React hooks
+    //     plugin mistakes it for React's `use()` hook.
+    files: ['e2e/**/*.{ts,tsx}'],
+    rules: {
+      'no-empty-pattern': 'off',
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', disallowTypeAnnotations: false }
+      ],
+      'react-hooks/rules-of-hooks': 'off'
+    }
+  },
+  {
     // Ban mirroring reactive values into refs via useEffect — the "atom-mirrored
     // ref" antipattern. A ref synced from a nanostores atom via useEffect lags the
     // atom by one render, which creates stale-read bugs in callbacks that read the

@@ -34,15 +34,15 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
-import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
-import { isReauthRequiredError, waitForHermesReady } from './backend-health'
+import { buildDesktopBackendEnv, matlensManagedNodePathEntries, normalizeMatLensHomeRoot } from './backend-env'
+import { isReauthRequiredError, waitForMatLensReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import {
-  canImportHermesCli,
+  canImportMatLensCli,
   execProbeSync,
   PROBE_TIMEOUT_MS,
-  shouldTrustHermesOverride,
-  verifyHermesCli
+  shouldTrustMatLensOverride,
+  verifyMatLensCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
@@ -300,8 +300,8 @@ import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
   getVenvSitePackagesEntries,
-  resolveVenvHermesCommand
-} from './windows-hermes-path'
+  resolveVenvMatLensCommand
+} from './windows-matlens-path'
 import {
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
@@ -638,7 +638,7 @@ if (INSTALL_STAMP) {
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
   if (process.env.HERMES_HOME) {
-    return normalizeHermesHomeRoot(process.env.HERMES_HOME)
+    return normalizeMatLensHomeRoot(process.env.HERMES_HOME)
   }
 
   if (USER_DATA_OVERRIDE) {
@@ -655,7 +655,7 @@ function resolveHermesHome() {
     const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
 
     if (fromRegistry) {
-      return normalizeHermesHomeRoot(fromRegistry)
+      return normalizeMatLensHomeRoot(fromRegistry)
     }
   }
 
@@ -678,7 +678,7 @@ function resolveHermesHome() {
 const HERMES_HOME = resolveHermesHome()
 
 function pathWithHermesManagedNode(...entries) {
-  const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
+  const managed = matlensManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
 
   return [...managed, ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
 }
@@ -2002,16 +2002,16 @@ function isCommandScript(command) {
 }
 
 function unwrapWindowsVenvHermesCommand(command, backendArgs) {
-  return resolveVenvHermesCommand(command, backendArgs, {
+  return resolveVenvMatLensCommand(command, backendArgs, {
     isWindows: IS_WINDOWS,
     isCommandScript,
     fileExists,
     directoryExists,
-    canImportHermesCli,
+    canImportMatLensCli,
     getVenvPython,
     getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
-    hermesHome: HERMES_HOME,
+    matlensHome: HERMES_HOME,
     resolvePath: (...segments) => path.resolve(...segments),
     dirname: p => path.dirname(p),
     basename: p => path.basename(p),
@@ -3996,7 +3996,7 @@ function isActiveRuntimeUsable() {
   return (
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
     fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
+    canImportMatLensCli(venvPython, {
       env: {
         PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
       }
@@ -4240,7 +4240,7 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
     command,
     args: ['-m', 'matlens_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
+      matlensHome: HERMES_HOME,
       pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
     }),
@@ -4264,7 +4264,7 @@ function createActiveBackend(backendArgs) {
     command,
     args: ['-m', 'matlens_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
+      matlensHome: HERMES_HOME,
       pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
       venvRoot: VENV_ROOT
     }),
@@ -4373,7 +4373,7 @@ function resolveHermesBackend(backendArgs) {
       // the Nix wrapper), not a discovered PATH candidate. It must not fall
       // through to the install-script bootstrap if the optional probe times
       // out under load; the pinned backend is the only valid runtime there.
-      if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
+      if (shouldTrustMatLensOverride(hermesOverride) || verifyMatLensCli(hermesCommand, { shell: shellForProbe })) {
         // `unwrapped` above already answered "is this a Windows venv shim?" —
         // it was null (not a shim, or its import probe failed). Do NOT re-run
         // unwrapWindowsVenvHermesCommand here: the second call repeats the
@@ -4410,7 +4410,7 @@ function resolveHermesBackend(backendArgs) {
     // Verify the import works before trusting the candidate; on
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
+    if (canImportMatLensCli(python)) {
       return {
         kind: 'python',
         label: `installed matlens_cli module via ${python}`,
@@ -4508,7 +4508,7 @@ async function ensureRuntime(backend) {
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
       sourceRepoRoot: SOURCE_REPO_ROOT,
-      hermesHome: HERMES_HOME,
+      matlensHome: HERMES_HOME,
       logRoot: path.join(HERMES_HOME, 'logs'),
       abortSignal: bootstrapAbortController.signal,
       onEvent: ev => {
@@ -5591,7 +5591,7 @@ async function gatewayAuthProviders(baseUrl) {
 // an anonymous probe 401s forever against a live session, and it can never
 // see the 404 that identifies a backend predating /api/health (the auth gate
 // answers before the SPA catch-all). `probeIsCredentialed` tells
-// waitForHermesReady how to read a 401 — rejected session vs gated route.
+// waitForMatLensReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
   const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
   const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
@@ -5626,7 +5626,7 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
 async function waitForHermes(baseUrl, token, signal?, authMode?) {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
-  return waitForHermesReady(baseUrl, {
+  return waitForMatLensReady(baseUrl, {
     token,
     signal,
     fetchPublicJson,
@@ -8978,8 +8978,8 @@ async function testDesktopConnectionConfig(input: any = {}) {
             hermesVersion = inspection.version
             supported = inspection.supported
           } else {
-            hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
-            hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
+            hermesPath = await remoteLifecycle.locateMatLens(ssh, sshConfig.remoteHermesPath || '')
+            hermesVersion = await remoteLifecycle.probeMatLensVersion(ssh, hermesPath)
             supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath)
           }
 
@@ -14009,7 +14009,7 @@ async function runDesktopUninstall(mode) {
     agentRoot: ACTIVE_HERMES_ROOT,
     uninstallArgs,
     appPath: removeBundle,
-    hermesHome: HERMES_HOME
+    matlensHome: HERMES_HOME
   }
 
   let scriptPath
