@@ -24,11 +24,15 @@ import type {
   DebugShareResponse,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
+  LogsResponse,
   MatLensConfig,
   MatLensConfigRecord,
-  LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
+  MemoryContentStatus,
+  MemoryItem,
+  MemoryLastInjection,
+  MemoryListResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
@@ -167,13 +171,17 @@ export type {
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   GatewayReadyPayload,
+  LogsResponse,
   MatLensConfig,
   MatLensConfigRecord,
-  LogsResponse,
   McpCatalogEntry,
   McpCatalogResponse,
   McpServerSummary,
   McpServerTestResponse,
+  MemoryContentStatus,
+  MemoryItem,
+  MemoryLastInjection,
+  MemoryListResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse,
@@ -952,6 +960,88 @@ export function saveMemoryProviderConfig(provider: string, values: Record<string
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
     method: 'PUT',
     body: { values }
+  })
+}
+
+// ── Memory content ─────────────────────────────────────────────────────────
+// The memory-content router lives at /api/memories: the dashboard already
+// owns /api/memory for *provider* status, so the two cannot share a prefix.
+export function listMemories(params?: {
+  limit?: number
+  offset?: number
+  q?: string
+  top_k?: number
+}): Promise<MemoryListResponse> {
+  const search = new URLSearchParams()
+
+  if (params?.q) {
+    search.set('q', params.q)
+  }
+
+  if (params?.top_k !== undefined) {
+    search.set('top_k', String(params.top_k))
+  }
+
+  if (params?.offset !== undefined) {
+    search.set('offset', String(params.offset))
+  }
+
+  if (params?.limit !== undefined) {
+    search.set('limit', String(params.limit))
+  }
+
+  const query = search.toString()
+
+  return window.matlensDesktop.api<MemoryListResponse>({
+    ...profileScoped(),
+    path: `/api/memories${query ? `?${query}` : ''}`
+  })
+}
+
+export function getMemoryContentStatus(): Promise<MemoryContentStatus> {
+  return window.matlensDesktop.api<MemoryContentStatus>({
+    ...profileScoped(),
+    path: '/api/memories/status'
+  })
+}
+
+export function getMemoryLastInjection(): Promise<MemoryLastInjection> {
+  return window.matlensDesktop.api<MemoryLastInjection>({
+    ...profileScoped(),
+    path: '/api/memories/last-injection'
+  })
+}
+
+export function getMemoryById(memoryId: string): Promise<{ memory: MemoryItem | null; ok: boolean }> {
+  return window.matlensDesktop.api<{ memory: MemoryItem | null; ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/memories/${encodeURIComponent(memoryId)}`
+  })
+}
+
+export function addMemoryContent(content: string): Promise<{ ok: boolean }> {
+  return window.matlensDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/memories',
+    method: 'POST',
+    body: { content }
+  })
+}
+
+export function updateMemoryContent(memoryId: string, text: string): Promise<{ ok: boolean }> {
+  return window.matlensDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/memories/${encodeURIComponent(memoryId)}`,
+    method: 'PATCH',
+    body: { text }
+  })
+}
+
+export function deleteMemoryContent(memoryId: string): Promise<{ ok: boolean }> {
+  return window.matlensDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/memories/${encodeURIComponent(memoryId)}`,
+    method: 'DELETE'
   })
 }
 

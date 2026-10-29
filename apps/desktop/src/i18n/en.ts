@@ -1212,6 +1212,43 @@ export const en: Translations = {
     }
   },
 
+  memoryCenter: {
+    title: 'Memory Center',
+    close: 'Close memory center',
+    refresh: 'Refresh',
+    searchLabel: 'Search memories',
+    searchPlaceholder: 'Search memories (semantic + keyword)',
+    add: 'Add memory',
+    edit: 'Edit',
+    delete: 'Delete',
+    save: 'Save',
+    cancel: 'Cancel',
+    loading: 'Reading backend…',
+    totalCount: (count: number) => `${count} memories`,
+    backend: (source: string) => `backend ${source}`,
+    lastInjection: 'Injected this turn (memories the agent used)',
+    emptyTitle: 'No memories yet',
+    emptyDesc: 'The agent extracts them after a few turns of conversation.',
+    noMatchTitle: 'No matching memories',
+    noMatchDesc: (query: string) => `Nothing matches “${query}”.`,
+    disabledTitle: 'Memory is turned off',
+    disabledDesc: 'Turn it on in Settings → Memory to start accumulating.',
+    selectTitle: 'No memory selected',
+    selectDesc: 'Pick one from the list to see its detail, source and metadata.',
+    createTitle: 'Add memory',
+    editTitle: 'Edit memory',
+    createPlaceholder: '[Material] Your material system and key conclusions…',
+    loadMore: 'Load more',
+    confidence: (value: number) => `confidence ${value}%`,
+    bothRecallers: 'both recallers',
+    sourceLabels: {
+      user: 'User statement',
+      document: 'Literature',
+      agent_inference: 'Agent inference',
+      imported_web: 'Web import'
+    }
+  },
+
   starmap: {
     title: 'Memory Graph',
     subtitle: (nodes, clusters) => `${nodes} skills across ${clusters} categories`,
@@ -1964,7 +2001,8 @@ export const en: Translations = {
       skills: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs'
+      cron: 'Scheduled jobs',
+      memory: 'Memory Center'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
@@ -2711,6 +2749,8 @@ export const en: Translations = {
       webhooks: 'Webhooks',
       openWebhooks: 'Open webhooks',
       starmap: 'Memory Graph',
+      memory: 'Memory Center',
+      openMemory: 'Open memory center',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
       contextUsage: 'Context usage',

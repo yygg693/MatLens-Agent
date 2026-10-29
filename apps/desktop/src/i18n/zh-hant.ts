@@ -1083,6 +1083,43 @@ export const zhHant = defineLocale({
     skillArchivedMessage: '可透過 matlens curator restore 還原。'
   },
 
+  memoryCenter: {
+    title: '記憶中心',
+    close: '關閉記憶中心',
+    refresh: '重新整理',
+    searchLabel: '搜尋記憶',
+    searchPlaceholder: '搜尋記憶（語意 + 關鍵字）',
+    add: '新增記憶',
+    edit: '編輯',
+    delete: '刪除',
+    save: '儲存',
+    cancel: '取消',
+    loading: '正在讀取後端…',
+    totalCount: (count: number) => `共 ${count} 筆`,
+    backend: (source: string) => `後端 ${source}`,
+    lastInjection: '本輪注入（Agent 用到的記憶）',
+    emptyTitle: '還沒有記憶',
+    emptyDesc: '對話幾輪後 Agent 會自動擷取。',
+    noMatchTitle: '沒有符合的記憶',
+    noMatchDesc: (query: string) => `沒有符合「${query}」的記憶。`,
+    disabledTitle: '記憶功能已關閉',
+    disabledDesc: '在設定 → 記憶中開啟後自動累積。',
+    selectTitle: '未選擇記憶',
+    selectDesc: '從列表中選擇一筆查看詳情、來源與中繼資料。',
+    createTitle: '新增記憶',
+    editTitle: '編輯記憶',
+    createPlaceholder: '[材料] 你的研究方向的材料體系與關鍵結論…',
+    loadMore: '載入更多',
+    confidence: (value: number) => `信心度 ${value}%`,
+    bothRecallers: '雙路命中',
+    sourceLabels: {
+      user: '使用者陳述',
+      document: '文獻',
+      agent_inference: 'Agent 推論',
+      imported_web: '網路匯入'
+    }
+  },
+
   starmap: {
     title: '記憶圖譜',
     subtitle: (nodes, clusters) => `${clusters} 個類別中的 ${nodes} 個技能`,
@@ -1674,7 +1711,8 @@ export const zhHant = defineLocale({
       skills: '技能與工具',
       messaging: '訊息平台',
       artifacts: '成品',
-      cron: '排程工作'
+      cron: '排程工作',
+      memory: '記憶中心'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
@@ -2339,6 +2377,8 @@ export const zhHant = defineLocale({
       cron: '排程',
       openCron: '開啟排程工作',
       starmap: '記憶圖譜',
+      memory: '記憶中心',
+      openMemory: '開啟記憶中心',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       contextUsage: '上下文使用量',

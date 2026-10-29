@@ -1058,6 +1058,43 @@ export interface Translations {
     }
   }
 
+  memoryCenter: {
+    title: string
+    close: string
+    refresh: string
+    searchLabel: string
+    searchPlaceholder: string
+    add: string
+    edit: string
+    delete: string
+    save: string
+    cancel: string
+    loading: string
+    totalCount: (count: number) => string
+    backend: (source: string) => string
+    lastInjection: string
+    emptyTitle: string
+    emptyDesc: string
+    noMatchTitle: string
+    noMatchDesc: (query: string) => string
+    disabledTitle: string
+    disabledDesc: string
+    selectTitle: string
+    selectDesc: string
+    createTitle: string
+    editTitle: string
+    createPlaceholder: string
+    loadMore: string
+    confidence: (value: number) => string
+    bothRecallers: string
+    sourceLabels: {
+      user: string
+      document: string
+      agent_inference: string
+      imported_web: string
+    }
+  }
+
   starmap: {
     title: string
     subtitle: (nodes: number, clusters: number) => string
@@ -2294,6 +2331,8 @@ export interface Translations {
       openWebhooks: string
       starmap: string
       openStarmap: string
+      memory: string
+      openMemory: string
       turnRunning: string
       contextUsage: string
       contextUsagePanel: {

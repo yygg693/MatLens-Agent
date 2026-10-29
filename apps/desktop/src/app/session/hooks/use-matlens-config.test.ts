@@ -3,8 +3,8 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
-import { getMatLensConfig } from '@/matlens'
 import { persistString } from '@/lib/storage'
+import { getMatLensConfig } from '@/matlens'
 import {
   $currentCwd,
   $currentFastMode,

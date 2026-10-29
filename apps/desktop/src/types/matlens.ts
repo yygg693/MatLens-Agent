@@ -105,6 +105,55 @@ export interface MemoryProviderOAuthStatus {
   state: 'connected' | 'error' | 'idle' | 'pending'
 }
 
+// ── Memory content (the memory-center page) ─────────────────────────────────
+// Mirrors the shapes served by matlens_kit/api/mem_api.py under /api/memories.
+
+export interface MemoryItem {
+  category: string
+  confidence?: null | number
+  created_at?: null | string
+  id: string
+  memory: string
+  metadata?: Record<string, unknown>
+  rrf_score?: number
+  score: number
+  source_ref?: null | string
+  source_type?: null | string
+  updated_at?: null | string
+}
+
+export interface MemoryListResponse {
+  count: number
+  /** "browse" (paging the store) or "search" (semantic + keyword recall). */
+  disabled?: boolean
+  has_more: boolean
+  limit: number
+  memories: MemoryItem[]
+  mode?: string
+  offset: number
+  ok: boolean
+  query: string
+  total: null | number
+}
+
+export interface MemoryContentStatus {
+  auto_write: boolean
+  count: null | number
+  enabled: boolean
+  graph_auto_build: boolean
+  ok: boolean
+  provider: string
+  /** "oss" | "self-hosted" | "platform" | null — which backend answered. */
+  source: null | string
+}
+
+export interface MemoryLastInjection {
+  available: boolean
+  count: number
+  memories: MemoryItem[]
+  ok: boolean
+}
+
 export interface EnvVarInfo {
   advanced: boolean
   category: string

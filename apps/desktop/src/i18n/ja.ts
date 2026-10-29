@@ -1122,6 +1122,43 @@ export const ja = defineLocale({
     skillArchivedMessage: 'matlens curator restore で復元できます。'
   },
 
+  memoryCenter: {
+    title: 'メモリセンター',
+    close: 'メモリセンターを閉じる',
+    refresh: '更新',
+    searchLabel: 'メモリを検索',
+    searchPlaceholder: 'メモリを検索（意味 + キーワード）',
+    add: 'メモリを追加',
+    edit: '編集',
+    delete: '削除',
+    save: '保存',
+    cancel: 'キャンセル',
+    loading: 'バックエンドを読み込み中…',
+    totalCount: (count: number) => `合計 ${count} 件`,
+    backend: (source: string) => `バックエンド ${source}`,
+    lastInjection: '今回注入されたメモリ（エージェントが使用した内容）',
+    emptyTitle: 'メモリがまだありません',
+    emptyDesc: '数往復の会話後にエージェントが自動的に抽出します。',
+    noMatchTitle: '一致するメモリがありません',
+    noMatchDesc: (query: string) => `「${query}」に一致するメモリはありません。`,
+    disabledTitle: 'メモリは無効です',
+    disabledDesc: '設定 → メモリ で有効にすると自動的に蓄積されます。',
+    selectTitle: 'メモリが選択されていません',
+    selectDesc: 'リストから選択すると詳細・出典・メタデータを表示します。',
+    createTitle: 'メモリを追加',
+    editTitle: 'メモリを編集',
+    createPlaceholder: '[材料] あなたの研究材料と重要な結論…',
+    loadMore: 'さらに読み込む',
+    confidence: (value: number) => `信頼度 ${value}%`,
+    bothRecallers: '両方の検索で一致',
+    sourceLabels: {
+      user: 'ユーザーの発言',
+      document: '文献',
+      agent_inference: 'エージェントの推論',
+      imported_web: 'ウェブからインポート'
+    }
+  },
+
   starmap: {
     title: 'メモリグラフ',
     subtitle: (nodes, clusters) => `${clusters} カテゴリの ${nodes} スキル`,
@@ -1733,7 +1770,8 @@ export const ja = defineLocale({
       skills: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ'
+      cron: 'スケジュール済みジョブ',
+      memory: 'メモリセンター'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',
@@ -2422,6 +2460,8 @@ export const ja = defineLocale({
       cron: 'Cron',
       openCron: 'Cron ジョブを開く',
       starmap: 'メモリグラフ',
+      memory: 'メモリセンター',
+      openMemory: 'メモリセンターを開く',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
       contextUsage: 'コンテキスト使用状況',

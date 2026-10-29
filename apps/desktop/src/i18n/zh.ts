@@ -1404,6 +1404,43 @@ export const zh: Translations = {
     }
   },
 
+  memoryCenter: {
+    title: '记忆中心',
+    close: '关闭记忆中心',
+    refresh: '刷新',
+    searchLabel: '搜索记忆',
+    searchPlaceholder: '搜索记忆（语义 + 关键词）',
+    add: '添加记忆',
+    edit: '编辑',
+    delete: '删除',
+    save: '保存',
+    cancel: '取消',
+    loading: '正在读取后端…',
+    totalCount: (count: number) => `共 ${count} 条`,
+    backend: (source: string) => `后端 ${source}`,
+    lastInjection: '本轮注入（Agent 用到的记忆）',
+    emptyTitle: '还没有记忆',
+    emptyDesc: '对话几轮后 Agent 会自动提取。',
+    noMatchTitle: '没有匹配的记忆',
+    noMatchDesc: (query: string) => `没有匹配「${query}」的记忆。`,
+    disabledTitle: '记忆功能已关闭',
+    disabledDesc: '在设置 → 记忆中开启后自动积累。',
+    selectTitle: '未选择记忆',
+    selectDesc: '从列表中选择一条查看详情、来源与元数据。',
+    createTitle: '添加记忆',
+    editTitle: '编辑记忆',
+    createPlaceholder: '[材料] 你的研究方向的材料体系与关键结论…',
+    loadMore: '加载更多',
+    confidence: (value: number) => `置信度 ${value}%`,
+    bothRecallers: '双路命中',
+    sourceLabels: {
+      user: '用户陈述',
+      document: '文献',
+      agent_inference: 'Agent 推断',
+      imported_web: '网络导入'
+    }
+  },
+
   starmap: {
     title: '记忆图谱',
     subtitle: (nodes, clusters) => `${clusters} 个类别中的 ${nodes} 个技能`,
@@ -2151,7 +2188,8 @@ export const zh: Translations = {
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务'
+      cron: '定时任务',
+      memory: '记忆中心'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2882,6 +2920,8 @@ export const zh: Translations = {
       webhooks: 'Webhook',
       openWebhooks: '打开 Webhook',
       starmap: '记忆图谱',
+      memory: '记忆中心',
+      openMemory: '打开记忆中心',
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
       contextUsage: '上下文用量',
