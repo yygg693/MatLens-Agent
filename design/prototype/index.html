@@ -805,6 +805,42 @@ input,textarea,select{font-family:inherit;font-size:13px}
 .cite-more{padding:8px 13px;font-size:11px;color:var(--ml-text-faint);text-align:center;
   border-top:1px solid var(--ml-card-border);cursor:pointer}
 .cite-more:hover{color:var(--ml-sky)}
+/* 数据集卡片（2026-10-29）—— 复用 kb-web 骨架，额外显示许可证与文件体积 */
+.kb-ds{position:relative}
+.kb-ds-lic{flex:none;font-size:9.5px;font-family:var(--mono);padding:2px 7px;border-radius:6px;
+  border:1px solid var(--ml-card-border);color:var(--ml-text-faint);white-space:nowrap;margin-left:8px}
+.kb-ds-lic.lic-by{color:var(--ml-sky);border-color:rgba(56,189,248,.3);background:rgba(56,189,248,.09)}
+.kb-ds-lic.lic-open{color:var(--ml-ok);border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.09)}
+.kb-ds-lic.lic-other{color:var(--ml-warn);border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.08)}
+.kb-ds-files{font-size:11px;color:var(--ml-text-faint);margin-top:5px;line-height:1.55;
+  font-family:var(--mono);word-break:break-all}
+.ks-bad{color:var(--ml-danger);font-size:10.5px}
+/* 文件清单浮层 */
+.kb-ds-overlay{position:fixed;inset:0;z-index:900;background:rgba(15,23,42,.5);
+  display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(3px)}
+.kb-ds-ovbox{background:var(--ml-card);border:1px solid var(--ml-card-border);border-radius:14px;
+  max-width:620px;width:100%;max-height:78vh;display:flex;flex-direction:column;
+  box-shadow:0 24px 60px rgba(15,23,42,.28)}
+.kb-ds-ovhead{display:flex;align-items:center;justify-content:space-between;padding:14px 17px;
+  border-bottom:1px solid var(--ml-card-border)}
+.kb-ds-ovhead b{font-size:13.5px;font-weight:700;color:var(--ml-text)}
+.kb-ds-ovx{background:none;border:none;color:var(--ml-text-faint);font-size:15px;cursor:pointer;
+  padding:3px 7px;border-radius:6px}
+.kb-ds-ovx:hover{background:var(--ml-card-deep);color:var(--ml-text)}
+.kb-ds-ovbody{padding:15px 17px;overflow-y:auto}
+.kb-ds-fmeta{font-size:12px;color:var(--ml-text-dim);margin-bottom:12px;line-height:1.6}
+.kb-ds-flist{display:flex;flex-direction:column;gap:5px}
+.kb-ds-file{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;
+  background:var(--ml-card-deep);border:1px solid var(--ml-card-border);font-size:11.5px}
+.kb-ds-fk{flex:1;min-width:0;font-family:var(--mono);color:var(--ml-text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kb-ds-fs{flex:none;color:var(--ml-text-faint);font-family:var(--mono);font-size:10.5px}
+.kb-ds-fu{flex:none;color:var(--ml-sky);font-size:10.5px;text-decoration:none;white-space:nowrap}
+.kb-ds-fu:hover{text-decoration:underline}
+.kb-ds-fnote{font-size:11px;color:var(--ml-text-faint);line-height:1.7;margin-top:13px;
+  padding:10px 12px;border-radius:9px;background:var(--ml-card-deep);
+  border:1px solid var(--ml-card-border)}
+.kb-ds-fnote b{color:var(--ml-text-dim)}
 /* 检索结果：相对排序 + 如实展示 score */
 .kb-hit-note{font-size:11px;color:var(--ml-text-faint);padding:0 2px 9px;line-height:1.55}
 .kb-hit{padding:10px 12px;margin-bottom:8px;border-radius:11px;background:var(--ml-card);
@@ -1768,6 +1804,10 @@ input,textarea,select{font-family:inherit;font-size:13px}
                 <svg viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.1 9.4A4.5 4.5 0 0 0 6.5 19z"/></svg>
                 云端 API<span class="km-n" id="km-cloud-n">0</span>
               </button>
+              <button class="kb-mode" data-kbmode="dataset" role="tab">
+                <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+                数据集<span class="km-n" id="km-dataset-n">0</span>
+              </button>
             </div>
             <button class="btn btn-primary" id="btn-new-kb"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建知识库</button>
           </div>
@@ -1868,6 +1908,33 @@ input,textarea,select{font-family:inherit;font-size:13px}
               </div>
               <div class="kb-srcstat" id="kb-srcstat"></div>
               <div id="kb-web-results"></div>
+            </div>
+
+            <!-- ══ 数据集模式工作区（data-kbmode="dataset" 时显示） ══
+                 论文源只能找到文献；材料实验的关键数据（SCAPS 模拟输出、
+                 DFT 结果、XRD 原始谱、电池循环数据）大量发布在公开数据集仓库。
+                 流程与云端 API 一致：检索 → 勾选 → 元数据沉淀进本地库。
+                 差别：只导入**元数据**（含文件清单与许可），不自动下载文件 ——
+                 数据集动辄上百 MB，是否下载由用户自行决定。 -->
+            <div id="kb-dataset-pane" style="display:none">
+              <div class="kb-searchbar">
+                <input class="input" id="kb-ds-query" placeholder="检索开放数据集：如「SOFC 电极表征数据」「钙钛矿 SCAPS 模拟」「锂电循环退化」">
+                <button class="btn btn-primary btn-sm" id="btn-kb-ds-search">检索数据集</button>
+                <select class="kb-topk" id="kb-ds-topk" title="每个源取几条">
+                  <option value="3">每源 3 条</option>
+                  <option value="5" selected>每源 5 条</option>
+                  <option value="8">每源 8 条</option>
+                </select>
+              </div>
+              <div class="kb-importbar" id="kb-ds-importbar" style="display:none">
+                <span>已选 <b id="kb-ds-picked-n">0</b> 个数据集，将把<b>元数据</b>沉淀进</span>
+                <span class="kib-target" id="kb-ds-target">—</span>
+                <span class="kib-sp"></span>
+                <button class="btn btn-ghost btn-sm" id="btn-kb-ds-clear">清空</button>
+                <button class="btn btn-primary btn-sm" id="btn-kb-ds-import">导入本地知识库</button>
+              </div>
+              <div class="kb-srcstat" id="kb-ds-srcstat"></div>
+              <div id="kb-ds-results"></div>
             </div>
 
             <!-- 本地库存储信息：磁盘位置 / 索引后端 / 占用。
