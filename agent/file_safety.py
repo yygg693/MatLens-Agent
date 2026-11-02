@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from matlens_cli.env_compat import matlens_env
+
 
 def _matlens_home_path() -> Path:
     """Resolve the active MATLENS_HOME (profile-aware) without circular imports."""
@@ -94,7 +96,7 @@ def get_safe_write_roots() -> set[str]:
     """Return resolved MATLENS_WRITE_SAFE_ROOT paths. Supports multiple directories
     separated by ``os.pathsep`` (``:`` on Unix, ``;`` on Windows).
     E.g., ``/opt/data:/var/www/html`` on Unix, ``C:\\data;D:\\www`` on Windows."""
-    env = os.getenv("MATLENS_WRITE_SAFE_ROOT", "")
+    env = matlens_env("MATLENS_WRITE_SAFE_ROOT", "")
     if not env:
         return set()
     roots: set[str] = set()

@@ -80,6 +80,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from matlens_cli._subprocess_compat import windows_hide_flags
+from matlens_cli.env_compat import matlens_env
 
 logger = logging.getLogger(__name__)
 
@@ -401,8 +402,13 @@ def _lazy_install_target() -> Optional[Path]:
 
     Returns a path only when :data:`_LAZY_TARGET_ENV` is set to a non-empty
     value. The directory is created on demand by :func:`_ensure_target_ready`.
+
+    The legacy ``HERMES_LAZY_INSTALL_TARGET`` spelling is accepted as a
+    fallback so an existing docker-compose / .env keeps working across the
+    rename.  ``matlens_bootstrap.activate_durable_lazy_target`` reads the
+    same pair of names.
     """
-    raw = os.environ.get(_LAZY_TARGET_ENV, "").strip()
+    raw = (matlens_env(_LAZY_TARGET_ENV, "") or "").strip()
     if not raw:
         return None
     return Path(raw)
@@ -529,7 +535,7 @@ def _allow_lazy_installs() -> bool:
     # (2) Sealed-venv env var: blocks ONLY when there is no safe durable
     # target to redirect into. With a target set, the install goes to the
     # data volume (append-only on sys.path), so the seal is preserved.
-    if os.environ.get("MATLENS_DISABLE_LAZY_INSTALLS") == "1":
+    if matlens_env("MATLENS_DISABLE_LAZY_INSTALLS") == "1":
         return _lazy_install_target() is not None
 
     return True

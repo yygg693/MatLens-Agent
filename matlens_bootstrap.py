@@ -214,8 +214,19 @@ def activate_durable_lazy_target() -> None:
     The activation appends to the END of ``sys.path`` so the core venv
     always wins name collisions (see ``tools.lazy_deps`` for the full
     security rationale). Never raises; a missing/empty target is a no-op.
+
+    The legacy ``HERMES_LAZY_INSTALL_TARGET`` spelling is accepted here
+    directly rather than through ``matlens_cli.env_compat``: this module is
+    imported *before* any package is importable (that is the whole point of
+    it), so it must stay free of intra-project imports.  ``tools.lazy_deps``
+    reads the same pair of names, so both halves stay in agreement.
     """
-    if not os.environ.get("MATLENS_LAZY_INSTALL_TARGET", "").strip():
+    target = (
+        os.environ.get("MATLENS_LAZY_INSTALL_TARGET")
+        or os.environ.get("HERMES_LAZY_INSTALL_TARGET")
+        or ""
+    ).strip()
+    if not target:
         return
     try:
         from tools import lazy_deps

@@ -32,6 +32,7 @@ from matlens_constants import (
     set_matlens_home_override,
 )
 from matlens_cli.env_loader import load_matlens_dotenv
+from matlens_cli.env_compat import matlens_env
 from utils import is_truthy_value
 from tools.environments.local import matlens_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
@@ -3830,8 +3831,8 @@ def _resolve_session_platform() -> str:
       * neither set → "tui"
         (standalone ``matlens --tui``.)
     """
-    if is_truthy_value(os.environ.get("MATLENS_DESKTOP")) and not is_truthy_value(
-        os.environ.get("MATLENS_DESKTOP_TERMINAL")
+    if is_truthy_value(matlens_env("MATLENS_DESKTOP")) and not is_truthy_value(
+        matlens_env("MATLENS_DESKTOP_TERMINAL")
     ):
         return "desktop"
     return "tui"

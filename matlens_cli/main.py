@@ -67,6 +67,7 @@ except ModuleNotFoundError:
 # visible console when this process is windowless (pythonw gateway + every
 # kanban worker).  No-op on POSIX; never raises.
 from matlens_cli._subprocess_compat import suppress_platform_ver_console
+from matlens_cli.env_compat import matlens_env
 
 suppress_platform_ver_console()
 
@@ -10866,10 +10867,14 @@ def cmd_dashboard(args):
     # MATLENS_WEB_DIST overrides (dev / custom builds) must still work.
     # The desktop-spawned backend itself (MATLENS_DESKTOP=1) keeps its dist.
     # Intentionally headless `serve` re-sets MATLENS_SERVE_HEADLESS below.
-    if os.environ.get("MATLENS_DESKTOP") != "1":
-        _inherited_web_dist = os.environ.get("MATLENS_WEB_DIST", "")
+    if matlens_env("MATLENS_DESKTOP") != "1":
+        _inherited_web_dist = matlens_env("MATLENS_WEB_DIST") or ""
         if _is_electron_packaged_web_dist(_inherited_web_dist):
+            # Clear BOTH names: popping only the canonical one would leave a
+            # legacy HERMES_WEB_DIST in place, and matlens_env() would keep
+            # falling back to it on every later read.
             os.environ.pop("MATLENS_WEB_DIST", None)
+            os.environ.pop("HERMES_WEB_DIST", None)
     if not _headless_backend:
         os.environ.pop("MATLENS_SERVE_HEADLESS", None)
 
@@ -10897,7 +10902,7 @@ def cmd_dashboard(args):
         and not getattr(args, "isolated", False)
         and not getattr(args, "open_profile", "")
         # Desktop pool backends are intentionally per-profile.
-        and os.environ.get("MATLENS_DESKTOP") != "1"
+        and matlens_env("MATLENS_DESKTOP") != "1"
     ):
         url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
         if _dashboard_listening(args.host, args.port):
@@ -11029,7 +11034,7 @@ def cmd_dashboard(args):
         # Don't build the SPA, and tell mount_spa() (read at web_server import
         # below) to disable it even if a stray dist exists. Set it first.
         os.environ["MATLENS_SERVE_HEADLESS"] = "1"
-    elif "MATLENS_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
+    elif not matlens_env("MATLENS_WEB_DIST") and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
@@ -11037,8 +11042,8 @@ def cmd_dashboard(args):
         # Verify the dist actually exists; otherwise the server will start
         # and serve 404s with no obvious cause (issue #23817).
         _dist_root = (
-            Path(os.environ["MATLENS_WEB_DIST"])
-            if "MATLENS_WEB_DIST" in os.environ
+            Path(matlens_env("MATLENS_WEB_DIST"))
+            if matlens_env("MATLENS_WEB_DIST")
             else PROJECT_ROOT / "matlens_cli" / "web_dist"
         )
         if not (_dist_root / "index.html").exists():
@@ -11048,7 +11053,7 @@ def cmd_dashboard(args):
             # ONE recovery build through the normal build path. Only the
             # default dist location is recoverable: a custom MATLENS_WEB_DIST
             # points at a caller-managed directory the build cannot populate.
-            _recoverable = "MATLENS_WEB_DIST" not in os.environ
+            _recoverable = not matlens_env("MATLENS_WEB_DIST")
             if _recoverable:
                 print(f"⚠ --skip-build was passed but no web dist found at: {_dist_root}")
                 print("  Attempting one recovery build of the web UI...")
@@ -11068,7 +11073,7 @@ def cmd_dashboard(args):
         # same way the --skip-build branch does — otherwise the server starts
         # and serves 404s with no obvious cause (same failure mode as #23817,
         # via the env-var path).
-        _dist_root = Path(os.environ["MATLENS_WEB_DIST"]).expanduser()
+        _dist_root = Path(matlens_env("MATLENS_WEB_DIST")).expanduser()
         if not (_dist_root / "index.html").exists():
             print(f"✗ MATLENS_WEB_DIST is set but no web dist found at: {_dist_root}")
             print("  Pre-build first:  npm install --workspace web && npm run build -w web")
@@ -11076,8 +11081,10 @@ def cmd_dashboard(args):
             sys.exit(1)
         # Write the expanded path back: web_server reads MATLENS_WEB_DIST raw
         # at import (no expanduser), so a validated "~/dist" would otherwise
-        # pass here and still 404 there.
+        # pass here and still 404 there. Normalize onto the canonical name and
+        # drop the legacy alias so the two can never disagree afterwards.
         os.environ["MATLENS_WEB_DIST"] = str(_dist_root)
+        os.environ.pop("HERMES_WEB_DIST", None)
         print(f"→ Using web dist from MATLENS_WEB_DIST: {_dist_root}")
 
     # Discover and load plugins so any DashboardAuthProvider plugin

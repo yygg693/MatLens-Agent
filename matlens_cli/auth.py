@@ -88,6 +88,7 @@ from matlens_cli.config import (
     require_readable_config_before_write,
 )
 from matlens_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from matlens_cli.env_compat import matlens_env
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
@@ -2435,7 +2436,7 @@ def _nous_portal_env_override() -> Optional[str]:
     neither env var is set/blank.
     """
     return _optional_base_url(
-        os.getenv("MATLENS_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
+        matlens_env("MATLENS_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
     )
 
 
@@ -6320,7 +6321,7 @@ def resolve_nous_runtime_credentials(
             """Resolve every routing value that shared OAuth state can replace."""
             portal_url = (
                 _optional_base_url(state.get("portal_base_url"))
-                or os.getenv("MATLENS_PORTAL_BASE_URL")
+                or matlens_env("MATLENS_PORTAL_BASE_URL")
                 or os.getenv("NOUS_PORTAL_BASE_URL")
                 or DEFAULT_NOUS_PORTAL_URL
             ).rstrip("/")
@@ -8902,7 +8903,7 @@ def _nous_device_code_login(
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         portal_base_url
-        or os.getenv("MATLENS_PORTAL_BASE_URL")
+        or matlens_env("MATLENS_PORTAL_BASE_URL")
         or os.getenv("NOUS_PORTAL_BASE_URL")
         or pconfig.portal_base_url
     ).rstrip("/")

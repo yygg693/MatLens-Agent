@@ -74,6 +74,7 @@ from matlens_cli.dashboard_auth import (
     RefreshExpiredError,
     Session,
 )
+from matlens_cli.env_compat import matlens_env
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +356,7 @@ def _load_config_basic_auth_section() -> dict:
 
 def _resolve(env_name: str, cfg_section: dict, cfg_key: str) -> str:
     """Env-wins-over-config resolution; empty env treated as unset."""
-    env = os.environ.get(env_name, "").strip()
+    env = (matlens_env(env_name, "") or "").strip()
     if env:
         return env
     return str(cfg_section.get(cfg_key, "") or "").strip()
@@ -447,9 +448,7 @@ def register(ctx) -> None:
     #   * env password set        → hash it (overrides any config hash)
     #   * else config password_hash set → use it
     #   * else config plaintext password → hash it in-memory
-    plaintext_from_env = os.environ.get(
-        "MATLENS_DASHBOARD_BASIC_AUTH_PASSWORD", ""
-    ).strip()
+    plaintext_from_env = (matlens_env("MATLENS_DASHBOARD_BASIC_AUTH_PASSWORD", "") or "").strip()
     if plaintext_from_env:
         password_hash = hash_password(plaintext_from_env)
         logger.info(

@@ -52,6 +52,8 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
+from matlens_cli.env_compat import matlens_env
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -134,7 +136,11 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
-WEB_DIST = Path(os.environ["MATLENS_WEB_DIST"]) if "MATLENS_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+WEB_DIST = (
+    Path(matlens_env("MATLENS_WEB_DIST"))
+    if matlens_env("MATLENS_WEB_DIST")
+    else Path(__file__).parent / "web_dist"
+)
 _log = logging.getLogger(__name__)
 
 
@@ -390,7 +396,7 @@ async def _lifespan(app: "FastAPI"):
     # dashboard` is unaffected — it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    if os.getenv("MATLENS_DESKTOP") == "1":
+    if matlens_env("MATLENS_DESKTOP") == "1":
         # Before forking a fresh gateway, reap any orphan left by a previous
         # serve session. Graceful shutdown reaps the managed child, but an
         # abnormal exit (crash, SIGKILL, power loss, forced update) reparents
@@ -433,7 +439,7 @@ async def _lifespan(app: "FastAPI"):
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
-        if os.getenv("MATLENS_DESKTOP") == "1":
+        if matlens_env("MATLENS_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
 
 
@@ -507,11 +513,17 @@ app.include_router(_build_memory_router(MEMORY_CONTENT_PREFIX))
 
 
 def _resolve_session_token() -> str:
-    return os.environ.get("MATLENS_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+    return matlens_env("MATLENS_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 
 
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-MatLens-Session-Token"
+# Legacy header name kept for compatibility with desktop builds that were
+# compiled before the Hermes → MatLens rename. The renamed backend had already
+# switched to the new name, so those builds were sending a header the backend
+# ignored entirely — every gated endpoint answered 401. Accepting both closes
+# that window without weakening the check (both carry the same secret).
+_LEGACY_SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 
 
@@ -585,6 +597,13 @@ def _has_valid_session_token(request: Request) -> bool:
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
+        _SESSION_TOKEN.encode(),
+    ):
+        return True
+
+    legacy_header = request.headers.get(_LEGACY_SESSION_HEADER_NAME, "")
+    if legacy_header and hmac.compare_digest(
+        legacy_header.encode(),
         _SESSION_TOKEN.encode(),
     ):
         return True
@@ -10770,7 +10789,7 @@ async def _start_device_code_flow(
         import httpx
         pconfig = PROVIDER_REGISTRY["nous"]
         portal_base_url = (
-            os.getenv("MATLENS_PORTAL_BASE_URL")
+            matlens_env("MATLENS_PORTAL_BASE_URL")
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or pconfig.portal_base_url
         ).rstrip("/")
@@ -18215,7 +18234,7 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     so Electron passes ``MATLENS_DESKTOP_READY_FILE`` and waits for this JSON.
     Normal CLI/dashboard launches still use the stdout READY line below.
     """
-    target = os.environ.get("MATLENS_DESKTOP_READY_FILE")
+    target = matlens_env("MATLENS_DESKTOP_READY_FILE")
     if not target:
         return
 
@@ -18599,7 +18618,7 @@ def start_server(
             # Clear corpses left by a previous unclean Desktop exit before we
             # stack another backend + MCP tree (EMFILE / missing tabs).
             # Parent-death watchdog only protects *this* process going forward.
-            if os.getenv("MATLENS_DESKTOP") == "1":
+            if matlens_env("MATLENS_DESKTOP") == "1":
                 try:
                     from matlens_cli.dashboard_procs import (
                         _reap_orphaned_desktop_local_serves,

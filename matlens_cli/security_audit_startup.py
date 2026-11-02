@@ -28,6 +28,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from matlens_cli.env_compat import matlens_env
+
 logger = logging.getLogger("matlens.security_audit")
 
 # Sentinel so the audit only runs once per process even if both the CLI and
@@ -116,7 +118,7 @@ def _in_container() -> bool:
     """Best-effort container detection (Docker / Podman / generic OCI)."""
     if os.path.exists("/.dockerenv"):
         return True
-    if os.environ.get("MATLENS_DESKTOP_CHILD_PID"):
+    if matlens_env("MATLENS_DESKTOP_CHILD_PID"):
         return False  # desktop child, not a server container
     try:
         cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="replace")

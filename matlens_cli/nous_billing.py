@@ -32,6 +32,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from matlens_cli.env_compat import matlens_env
+
 DEFAULT_PORTAL_BASE_URL = "https://portal.nousresearch.com"
 
 # Default HTTP timeout (seconds). Charge/poll calls are quick; keep this tight so
@@ -176,7 +178,7 @@ def resolve_portal_base_url(state: Optional[dict[str, Any]] = None) -> str:
     ``MATLENS_PORTAL_BASE_URL`` → ``NOUS_PORTAL_BASE_URL`` → stored auth-state
     ``portal_base_url`` → registry default. Trailing slash stripped.
     """
-    env = os.getenv("MATLENS_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
+    env = matlens_env("MATLENS_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")
     if env and env.strip():
         return env.strip().rstrip("/")
     if state:

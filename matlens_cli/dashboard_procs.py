@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from matlens_cli.env_compat import matlens_env
+
 
 def _m():
     """Lazy ``matlens_cli.main`` reference (call-time; keeps patches working)."""
@@ -326,7 +328,7 @@ def _kill_stale_dashboard_processes(
     # backend child, it sets MATLENS_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
     exclude: set[int] | None = None
-    raw_pid = os.environ.get("MATLENS_DESKTOP_CHILD_PID")
+    raw_pid = matlens_env("MATLENS_DESKTOP_CHILD_PID")
     if raw_pid:
         # The desktop may manage several backends (one per active profile) and
         # passes them comma-separated; a lone int still parses for back-compat.
@@ -668,7 +670,7 @@ def _process_ppid(pid: int) -> int | None:
 
 def _exclude_pids_from_env() -> set[int]:
     """PIDs Desktop marks as live backends (MATLENS_DESKTOP_CHILD_PID)."""
-    raw = os.environ.get("MATLENS_DESKTOP_CHILD_PID", "")
+    raw = matlens_env("MATLENS_DESKTOP_CHILD_PID", "")
     out: set[int] = set()
     for part in raw.split(","):
         part = part.strip()

@@ -51,6 +51,7 @@ from agent.prompt_builder import (
 )
 from agent.runtime_cwd import resolve_context_cwd
 from matlens_constants import get_default_matlens_root, get_matlens_home
+from matlens_cli.env_compat import matlens_env
 from pathlib import Path
 from utils import is_truthy_value
 
@@ -151,7 +152,7 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
         return hint
     if _TUI_EMBEDDED_PANE_CLARIFIER in hint:
         return hint
-    if not is_truthy_value(os.getenv("MATLENS_DESKTOP_TERMINAL")):
+    if not is_truthy_value(matlens_env("MATLENS_DESKTOP_TERMINAL")):
         return hint
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
