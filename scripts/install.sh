@@ -43,9 +43,13 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/matlens-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/matlens-agent.git"
-MATLENS_HOME="${MATLENS_HOME:-$HOME/.matlens}"
+REPO_URL_SSH="git@github.com:yygg693/MatLens-Agent.git"
+REPO_URL_HTTPS="https://github.com/yygg693/MatLens-Agent.git"
+# Data root for config / sessions / memories.  MATLENS_HOME is canonical;
+# HERMES_HOME is the pre-rename name and is still honoured so an existing
+# export keeps working.  The default matches the backend's own default
+# (~/.matlens) so a CLI install and the desktop agree on one tree.
+MATLENS_HOME="${MATLENS_HOME:-${HERMES_HOME:-$HOME/.matlens}}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
 # explicit directory — if so we never override it.

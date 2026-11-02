@@ -52,22 +52,22 @@ FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
-# Do not write .pyc files at runtime: /opt/hermes is immutable in the
+# Do not write .pyc files at runtime: /opt/matlens is immutable in the
 # published container and writable state belongs under /opt/data.
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/matlens/.playwright
 
 # Install system dependencies in one layer, clear APT cache.
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
-# subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
+# subprocesses, git, bun, etc.) that would otherwise accumulate when MatLens
 # ran as PID 1. See #15012. Phase 2 of the s6-overlay supervision plan
 # replaces tini with s6-overlay's /init (PID 1 = s6-svscan), which reaps
 # zombies non-blockingly on SIGCHLD and additionally supervises the main
-# hermes process, the dashboard, and per-profile gateways.
+# MatLens process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
@@ -86,12 +86,12 @@ v = sqlite3.sqlite_version_info; \
 sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; \
 db = sqlite3.connect(':memory:'); \
 db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')\"); \
-db.execute(\"INSERT INTO docs VALUES ('hermes')\"); \
+db.execute(\"INSERT INTO docs VALUES ('matlens')\"); \
 sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH 'erm'\").fetchone()[0] != 1 else None; \
 db.close()"
 
 # ---------- s6-overlay install ----------
-# s6-overlay provides supervision for the main hermes process, the dashboard,
+# s6-overlay provides supervision for the main MatLens process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.
 #
 # Multi-arch: BuildKit auto-populates TARGETARCH (amd64 / arm64). s6-overlay
@@ -146,8 +146,8 @@ RUN set -eu; \
 # updated.
 COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
 
-# Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
-RUN useradd -u 10000 -m -d /opt/data hermes
+# Non-root user for runtime; UID can be overridden via MATLENS_UID at runtime
+RUN useradd -u 10000 -m -d /opt/data matlens
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
@@ -166,22 +166,22 @@ COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modu
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-WORKDIR /opt/hermes
+WORKDIR /opt/matlens
 
 # ---------- Layer-cached dependency install ----------
 # Copy only package manifests first so npm install + Playwright are cached
 # unless the lockfiles themselves change.
 #
-# ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
+# ui-tui/packages/matlens-ink/ is copied IN FULL (not just its manifests)
 # because it is referenced as a `file:` workspace dependency from
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
 COPY package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
-COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+COPY ui-tui/packages/matlens-ink/ ui-tui/packages/matlens-ink/
 # apps/shared/ is copied IN FULL because web/package.json references it as a
-# `file:` workspace dependency (same pattern as hermes-ink above).
+# `file:` workspace dependency (same pattern as matlens-ink above).
 COPY apps/shared/ apps/shared/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
@@ -190,7 +190,7 @@ COPY apps/shared/ apps/shared/
 # explicitly anyway as defense-in-depth: the previous Debian-bundled npm
 # 9.x defaulted to install-as-copy, which produced a hidden
 # node_modules/.package-lock.json that permanently disagreed with the root
-# lock on the @hermes/ink entry, tripped the TUI launcher's
+# lock on the @matlens/ink entry, tripped the TUI launcher's
 # `_tui_need_npm_install()` check on every startup, and triggered a
 # runtime `npm install` that then failed with EACCES.  Keeping the env
 # guards against a future regression if the source npm version changes.
@@ -248,7 +248,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 # remain external and are not part of the Hermes production image.
 #
 # The hindsight memory provider's client (hindsight-client) is baked in
-# for the same reason: it lazy-installs into /opt/hermes/.venv at first
+# for the same reason: it lazy-installs into /opt/matlens/.venv at first
 # use, which lives inside the (immutable) image layer rather than the
 # mounted /opt/data volume, so it is lost on every container recreate /
 # image update and recall/retain then fails with
@@ -281,46 +281,46 @@ RUN cd web && npm run build && \
 # the final read-only permissions at copy time so we skip the separate
 # `chmod -R` pass that previously walked ~30k files across the venv +
 # node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
-# gives the non-root hermes user read + traverse but no write; root retains
+# gives the non-root matlens user read + traverse but no write; root retains
 # write so the build steps below don't need chmod u+w dances.
 COPY --link --chmod=a+rX,go-w . .
 
 # ---------- Permissions ----------
-# Link hermes-agent itself (editable). Deps are already installed in the
+# Link matlens-agent itself (editable). Deps are already installed in the
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no
 # resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
-# Wire the exec shim and install-method stamp.  Files under /opt/hermes are
+# Wire the exec shim and install-method stamp.  Files under /opt/matlens are
 # already root-owned (COPY, uv sync, npm install all run as root) and
-# read-only for the hermes user (go-w from the --chmod above).
+# read-only for the matlens user (go-w from the --chmod above).
 
 USER root
-RUN mkdir -p /opt/hermes/bin && \
-    cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
-    chmod 0755 /opt/hermes/bin/hermes && \
-    printf 'docker\n' > /opt/hermes/.install_method
+RUN mkdir -p /opt/matlens/bin && \
+    cp /opt/matlens/docker/matlens-exec-shim.sh /opt/matlens/bin/matlens && \
+    chmod 0755 /opt/matlens/bin/matlens && \
+    printf 'docker\n' > /opt/matlens/.install_method
 # The ``.install_method`` stamp is baked next to the running code (the install
-# tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
+# tree), NOT into $MATLENS_HOME. $MATLENS_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a
 # host-side Desktop/CLI install; stamping it at boot used to clobber that
-# host install's marker and wrongly block its ``hermes update``. A code-scoped
+# host install's marker and wrongly block its ``matlens update``. A code-scoped
 # stamp is read first by detect_install_method() and is immune to the share.
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
-# the data volume. Each supervised service then drops to the hermes user via
-# `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
-# run as the default hermes user (UID 10000).
+# the data volume. Each supervised service then drops to the matlens user via
+# `s6-setuidgid matlens` in its run script. If MATLENS_UID is unset, services
+# run as the default matlens user (UID 10000).
 
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
-# container always returns nothing — meaning `hermes dump` reports
+# container always returns nothing — meaning `matlens dump` reports
 # "(unknown)" and the startup banner drops its `· upstream <sha>` suffix.
 # That makes support triage from container bug reports impossible:
 # we can't tell which commit the user is actually running.
 #
-# Fix: write the commit SHA passed via the HERMES_GIT_SHA build-arg to
-# /opt/hermes/.hermes_build_sha at build time, and have
-# hermes_cli/build_info.py read it at runtime.  Both `hermes dump` and
+# Fix: write the commit SHA passed via the MATLENS_GIT_SHA build-arg to
+# /opt/matlens/.matlens_build_sha at build time, and have
+# matlens_cli/build_info.py read it at runtime.  Both `matlens dump` and
 # banner.get_git_banner_state() try the baked SHA first, then fall back
 # to live `git rev-parse` for source installs (unchanged behaviour).
 #
@@ -328,13 +328,13 @@ RUN mkdir -p /opt/hermes/bin && \
 # omits the file, and the runtime falls back to live-git lookup.  CI
 # (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
-ARG HERMES_GIT_SHA=
-RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
+ARG MATLENS_GIT_SHA=
+RUN if [ -n "${MATLENS_GIT_SHA}" ]; then \
+        printf '%s\n' "${MATLENS_GIT_SHA}" > /opt/matlens/.matlens_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------
-# Static services declared at build time: main-hermes + dashboard.
+# Static services declared at build time: main-matlens + dashboard.
 # Per-profile gateway services are registered dynamically at runtime by
 # the profile create/delete hooks (Phase 4); they live under
 # /run/service/ (tmpfs) and are reconciled on container restart by
@@ -343,24 +343,24 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before
-# `exec hermes`. Wired in as cont-init.d/01- so it
+# `exec matlens`. Wired in as cont-init.d/01- so it
 # runs before user services start.
 #
 # 02-reconcile-profiles re-creates per-profile gateway s6 service
-# slots from $HERMES_HOME/profiles/<name>/ after a container restart
+# slots from $MATLENS_HOME/profiles/<name>/ after a container restart
 # (the /run/service/ scandir is tmpfs and wiped on restart). Phase 4.
 RUN mkdir -p /etc/cont-init.d && \
-    printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
-        > /etc/cont-init.d/01-hermes-setup && \
-    chmod +x /etc/cont-init.d/01-hermes-setup
+    printf '#!/command/with-contenv sh\nexec /opt/matlens/docker/stage2-hook.sh\n' \
+        > /etc/cont-init.d/01-matlens-setup && \
+    chmod +x /etc/cont-init.d/01-matlens-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
 
 # ---------- Runtime ----------
-ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+ENV MATLENS_WEB_DIST=/opt/matlens/matlens_cli/web_dist
 # Point the TUI launcher at the prebuilt bundle baked at build time (Layer 8:
 # `ui-tui && npm run build`). This makes _make_tui_argv take the prebuilt-bundle
-# fast path (`node --expose-gc /opt/hermes/ui-tui/dist/entry.js`) and skip the
+# fast path (`node --expose-gc /opt/matlens/ui-tui/dist/entry.js`) and skip the
 # _tui_need_npm_install / runtime `npm install` branch entirely — exactly the
 # nix/packaged-release path the launcher was designed for.
 #
@@ -374,11 +374,11 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 # embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
 # 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
 # check. (A separate launcher hardening is tracked independently.)
-ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
-ENV HERMES_HOME=/opt/data
-ENV HERMES_WRITE_SAFE_ROOT=/opt/data
-ENV HERMES_DISABLE_LAZY_INSTALLS=1
-# The published image seals /opt/hermes (root-owned, read-only) so a runtime
+ENV MATLENS_TUI_DIR=/opt/matlens/ui-tui
+ENV MATLENS_HOME=/opt/data
+ENV MATLENS_WRITE_SAFE_ROOT=/opt/data
+ENV MATLENS_DISABLE_LAZY_INSTALLS=1
+# The published image seals /opt/matlens (root-owned, read-only) so a runtime
 # lazy install can't mutate the agent's own venv and brick it. But opt-in
 # backends (Firecrawl web search, Exa, Feishu, …) keep their SDKs in
 # tools/lazy_deps.py — deliberately NOT baked into [all] (see pyproject.toml
@@ -387,37 +387,37 @@ ENV HERMES_DISABLE_LAZY_INSTALLS=1
 # lazy_deps appends this dir to the END of sys.path, so a package installed
 # here can only ADD modules — it can never shadow or downgrade a core module,
 # so the sealed-venv guarantee holds even with installs re-enabled. The dir
-# is seeded + chowned to the hermes user by docker/stage2-hook.sh and lives
+# is seeded + chowned to the matlens user by docker/stage2-hook.sh and lives
 # on the /opt/data volume, so it persists across container recreates / image
 # updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
-ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
+ENV MATLENS_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 
 # `docker exec` privilege-drop shim. When operators run
-# `docker exec <c> hermes ...` they default to root, and any file the
-# command writes under $HERMES_HOME (auth.json, .env, config.yaml) ends
+# `docker exec <c> matlens ...` they default to root, and any file the
+# command writes under $MATLENS_HOME (auth.json, .env, config.yaml) ends
 # up root-owned and unreadable to the supervised gateway (UID 10000).
-# The shim lives at /opt/hermes/bin/hermes, sits earliest on PATH, and
-# transparently re-exec's the real venv binary via `s6-setuidgid hermes`
+# The shim lives at /opt/matlens/bin/matlens, sits earliest on PATH, and
+# transparently re-exec's the real venv binary via `s6-setuidgid matlens`
 # when invoked as root. Non-root callers (supervised processes,
-# `--user hermes`, etc.) hit the short-circuit path with no overhead.
+# `--user matlens`, etc.) hit the short-circuit path with no overhead.
 # Recursion is impossible because the shim exec's the venv binary by
-# absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
+# absolute path (/opt/matlens/.venv/bin/matlens). See the shim source for
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
-COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
-COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-dispatch.sh
+COPY --chmod=0755 docker/matlens-exec-shim.sh /opt/matlens/bin/matlens
+COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/matlens/docker/entrypoint-dispatch.sh
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our
 # cont-init.d scripts don't pass through the wrapper. Expose the venv
-# bin globally so `docker exec <container> hermes ...` and any
-# subprocess that doesn't activate the venv first still find hermes.
+# bin globally so `docker exec <container> matlens ...` and any
+# subprocess that doesn't activate the venv first still find matlens.
 #
-# /opt/hermes/bin is prepended ahead of the venv so the privilege-drop
+# /opt/matlens/bin is prepended ahead of the venv so the privilege-drop
 # shim wins PATH resolution. The shim's last act is to exec the venv
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
-ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+ENV PATH="/opt/matlens/bin:/opt/matlens/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 
@@ -446,12 +446,12 @@ VOLUME [ "/opt/data" ]
 #   docker run <image> sleep infinity   → entrypoint-dispatch.sh sleep infinity
 #   docker run <image> --tui            → entrypoint-dispatch.sh --tui
 #
-# main-wrapper.sh handles arg routing (bare-exec vs. hermes
-# subcommand vs. no-args), drops to the hermes user via s6-setuidgid,
+# main-wrapper.sh handles arg routing (bare-exec vs. matlens
+# subcommand vs. no-args), drops to the matlens user via s6-setuidgid,
 # and exec's the final program so its exit code becomes the container
 # exit code. The dispatcher preserves that contract across both the
 # supervised PID-1 path and the non-PID-1 fallback path. Without the
 # wrapper-as-ENTRYPOINT, leading-dash args like `--version` would be
 # intercepted by /init's POSIX shell.
-ENTRYPOINT [ "/opt/hermes/docker/entrypoint-dispatch.sh" ]
+ENTRYPOINT [ "/opt/matlens/docker/entrypoint-dispatch.sh" ]
 CMD [ ]
