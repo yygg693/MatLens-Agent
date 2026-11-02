@@ -48,21 +48,21 @@ Pick the row that matches your goal:
 
 ## 1. Install MatLens Agent
 ### With the MatLens Desktop installer on macOS or Windows (recommended)
-To easily install the command-line and desktop applications, [download the MatLens Desktop installer](https://matlens-agent.nousresearch.com/) from our website and run it.
+To easily install the command-line and desktop applications, [download the MatLens Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
 
 ### Without MatLens Desktop:
 For a command-line only install without MatLens Desktop, run:
 
 #### Linux / macOS / WSL2 / Android (Termux)
 ```bash
-curl -fsSL https://matlens-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 #### Windows (native)
 
 Run in powershell:
 ```powershell
-iex (irm https://matlens-agent.nousresearch.com/install.ps1) 
+iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
 ```
 
 :::tip Android / Termux

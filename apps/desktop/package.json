@@ -183,9 +183,9 @@
     "executableName": "Hermes",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "MatLens Protocol",
         "schemes": [
-          "hermes"
+          "matlens"
         ]
       }
     ],

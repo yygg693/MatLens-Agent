@@ -14,12 +14,24 @@ venv/
 logs/
 *.log
 .matlens-*
+# 测试运行期临时目录（dedup / write-dedup 等）
+matlens-dedup-*/
+matlens-write-dedup-*/
 vendor/
+.bytecode-fingerprint
+.pytest-cache/
+.pytest_cache/
+
+# 写权限探针（whatsapp bridge / unbroker pdd 会在安装树里创建）
+.write_test
 
 # ---- Node ----
 node_modules/
 .npm/
 *.tsbuildinfo
+
+# ---- 本地工作台数据（项目记忆 / 任务记录，不入库）----
+.workbuddy/
 
 # ---- 桌面端构建产物 ----
 apps/desktop/dist/

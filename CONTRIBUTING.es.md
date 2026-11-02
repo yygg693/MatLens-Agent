@@ -81,7 +81,7 @@ Esto no es una barra de calidad — es una decisión de acoplamiento y mantenimi
 ### Clonar e instalar
 
 ```bash
-git clone https://github.com/NousResearch/matlens-agent.git
+git clone https://github.com/yygg693/MatLens-Agent.git
 cd matlens-agent
 
 # Crear venv con Python 3.11
@@ -581,7 +581,7 @@ test(tools): añadir tests unitarios para file_operations
 
 ## Reportar Issues
 
-- Usa [GitHub Issues](https://github.com/NousResearch/matlens-agent/issues)
+- Usa [GitHub Issues](https://github.com/yygg693/MatLens-Agent/issues)
 - Incluye: SO, versión de Python, versión de MatLens (`matlens version`), traza de error completa
 - Incluye pasos para reproducir
 - Verifica los issues existentes antes de crear duplicados

@@ -523,14 +523,21 @@ def resolve_whatsapp_bridge_dir() -> Path:
     matlens_home = get_matlens_home()
     matlens_home_bridge = matlens_home / "scripts" / "whatsapp-bridge"
 
-    # Check if install dir is writable
+    # Check if install dir is writable.  The probe file must be removed in a
+    # finally block: if touch() succeeds but unlink() fails (Windows file
+    # locks, antivirus), the probe would otherwise linger in the install tree
+    # and a stale writability verdict would be cached for the whole run.
+    test_file = install_bridge / ".write_test"
     try:
-        test_file = install_bridge / ".write_test"
         test_file.touch()
-        test_file.unlink()
         install_writable = True
     except (OSError, PermissionError):
         install_writable = False
+    finally:
+        try:
+            test_file.unlink(missing_ok=True)
+        except (OSError, PermissionError):
+            pass
 
     if install_writable:
         return install_bridge

@@ -13,7 +13,7 @@ import urllib.request
 
 DEFAULT_UA = (
     "matlens-osint-investigation/0.2 "
-    "(+https://github.com/NousResearch/matlens-agent; "
+    "(+https://github.com/yygg693/MatLens-Agent; "
     "set MATLENS_OSINT_UA env var to identify yourself per "
     "Wikimedia / SEC fair-use guidance)"
 )

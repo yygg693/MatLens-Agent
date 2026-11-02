@@ -191,7 +191,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
         Without this UA tag the Feishu server does not push group @mention
         events over the WebSocket transport.  See
-        https://github.com/NousResearch/matlens-agent/issues/50656
+        https://github.com/NousResearch/hermes-agent/issues/50656
         """
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

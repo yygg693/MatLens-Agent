@@ -3280,7 +3280,7 @@ class OptionalSkillSource(SkillSource):
     (search / install / inspect) and labelled "official" with "builtin" trust.
     """
 
-    OFFICIAL_REPO = "NousResearch/matlens-agent"
+    OFFICIAL_REPO = "yygg693/MatLens-Agent"
     OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
     def __init__(self, auth: Optional[GitHubAuth] = None):
@@ -4167,7 +4167,9 @@ def check_for_skill_updates(
 # MatLens centralized index source
 # ---------------------------------------------------------------------------
 
-HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+MATLENS_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+# Legacy spelling kept as an alias so older imports keep resolving.
+HERMES_INDEX_URL = MATLENS_INDEX_URL
 MATLENS_INDEX_TTL = 6 * 3600  # 6 hours
 
 

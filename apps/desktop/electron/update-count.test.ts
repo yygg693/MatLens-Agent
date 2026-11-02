@@ -261,22 +261,22 @@ test('compareApiUrl builds the GitHub compare URL for HTTPS origins', () => {
   assert.equal(
     compareApiUrl({
       currentSha: SHA_A,
-      originUrl: 'https://github.com/NousResearch/matlens-agent.git',
+      originUrl: 'https://github.com/yygg693/MatLens-Agent.git',
       targetSha: SHA_B
     }),
-    `https://api.github.com/repos/NousResearch/matlens-agent/compare/${SHA_A}...${SHA_B}`
+    `https://api.github.com/repos/yygg693/MatLens-Agent/compare/${SHA_A}...${SHA_B}`
   )
 })
 
 test('compareApiUrl handles SSH origin forms', () => {
   for (const originUrl of [
-    'git@github.com:NousResearch/matlens-agent.git',
-    'ssh://git@github.com/NousResearch/matlens-agent.git',
-    'git@github.com:NousResearch/matlens-agent'
+    'git@github.com:yygg693/MatLens-Agent.git',
+    'ssh://git@github.com/yygg693/MatLens-Agent.git',
+    'git@github.com:yygg693/MatLens-Agent'
   ]) {
     assert.equal(
       compareApiUrl({ currentSha: SHA_A, originUrl, targetSha: SHA_B }),
-      `https://api.github.com/repos/NousResearch/matlens-agent/compare/${SHA_A}...${SHA_B}`
+      `https://api.github.com/repos/yygg693/MatLens-Agent/compare/${SHA_A}...${SHA_B}`
     )
   }
 })

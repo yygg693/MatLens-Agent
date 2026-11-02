@@ -2,7 +2,7 @@
 
 Renders any content as colored ASCII character video. Audio, video, images, text, or pure math in, MP4/GIF/PNG sequence out. Full RGB color per character cell, 1080p 24fps default. No GPU.
 
-Built for [MatLens Agent](https://github.com/NousResearch/matlens-agent). Usable in any coding agent. Canonical source lives here; synced to [`NousResearch/matlens-agent/skills/creative/ascii-video`](https://github.com/NousResearch/matlens-agent/tree/main/skills/creative/ascii-video) via PR.
+Built for [MatLens Agent](https://github.com/yygg693/MatLens-Agent). Usable in any coding agent. Canonical source lives here; synced to [`yygg693/MatLens-Agent/skills/creative/ascii-video`](https://github.com/yygg693/MatLens-Agent/tree/master/skills/creative/ascii-video) via PR.
 
 ## What this is
 

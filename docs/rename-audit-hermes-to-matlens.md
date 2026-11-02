@@ -419,9 +419,96 @@ title: 'Hermes'  (窗口标题, 10218 / 10318 / 11173)
 
 ---
 
-## 7. 还没查清、需要你拍板的
+## 7. 已拍板的决策
 
-1. **`Hermes Cloud` 是什么？** —— `title: 'Sign in to Hermes Cloud'`、`HERMES_PORTAL_BASE_URL`、`HERMES_DASHBOARD_PORTAL_URL`、`HERMES_DASHBOARD_OAUTH_CLIENT_ID` 指向外部服务。如果那是 Nous 的服务而 MatLens 不继承这个身份，**这些文案和端点都不能改**，甚至功能本身要重新设计。
-2. **`hermes://` 深链的兼容期要多久？** —— 决定 C1 是「永久双注册」还是「N 个版本后弃用」。
-3. **appId 改名会不会影响现有自动更新通道？** —— `com.nousresearch.hermes` 是 electron-builder 更新的锚点，需要确认更新服务器怎么配的。
-4. **`website/` 是不是这个项目的正式文档站？** —— 如果是对外发布的，改名就是一次「产品更名」的对外宣告，需要配套发布说明。
+| 问题 | 结论 |
+|---|---|
+| **`Hermes Cloud` 是什么？** | Nous 的外部服务，MatLens **没有自有云**。相关文案与端点保持指向原处，不做产品身份继承。 |
+| **`hermes://` 深链兼容期？** | **立即弃用**。协议 canonical scheme 改为 `matlens://`；解析阶段仍兼容 `hermes`，但不再注册旧 scheme。 |
+| **appId 改名影响更新通道？** | 桌面端**自行更新**，不依赖 Nous 的更新通道。`appId` 与更新通道无关，留待后续高风险批次。 |
+| **`website/` 是不是正式文档站？** | 用途暂不明确，**本轮不动**。 |
+
+---
+
+## 8. 批次 0 的执行结果
+
+批次 0 已完成，落地为一次提交。核心是**修 bug**而非改名：
+
+### A2 — `MATLENS_HOME` 对齐
+
+桌面端原先默认 `%LOCALAPPDATA%\hermes` / `~/.hermes`，后端默认 `~/.matlens` —— 两半读的是**两棵不同的树**，用户的 provider / 记忆 / 会话在桌面端"消失"。现在统一解析到后端定义的同一个目录，且仍会优先采用**实际存在**的旧目录，避免改名吃掉存量数据。
+
+### A1 / A4 — token 链路
+
+后端读 `MATLENS_DASHBOARD_SESSION_TOKEN`，桌面端发 `HERMES_DASHBOARD_SESSION_TOKEN` —— header 名对不上，受保护端点一律 401。现在：
+
+- 后端**同时接受** `X-MatLens-Session-Token` 与 `X-Hermes-Session-Token`，两者都走 `hmac.compare_digest` 常数时间比较，安全性不降；
+- 桌面端**同时发送**两个 header；
+- 桌面端日志脱敏规则覆盖新旧两个 header 名，避免 token 明文落盘。
+
+### A5 — 终端标识
+
+`MATLENS_DESKTOP` / `MATLENS_DESKTOP_TERMINAL` 统一走兼容层读取。
+
+### 兼容层的落位：一个刻意的设计约束
+
+兼容层最终落在 `matlens_cli/env_compat.py`（**包内**），而非仓库根的顶层模块。
+
+原因是一个启动期崩溃：顶层模块只能通过 editable 安装的 finder 解析，而它的模块映射是**安装时烘焙**的。用户拉取改名后、重装之前跑 CLI，会在启动导入上撞上 `ModuleNotFoundError`；又因为 `matlens_bootstrap` 被每个入口点最先导入、且传递依赖兼容层，整个 CLI 会**起不来** —— 用户连 `matlens update` 都跑不了，正好失去自救手段。
+
+放进包内后，editable finder 通过已映射的 `matlens_cli` 包目录直接找到文件，**落盘即生效，无需重装**。`matlens_bootstrap` 也因此保持零项目依赖（`tui_gateway/entry.py` 与 `slash_worker.py` 是**无保护**导入它的）。
+
+### 顺带修掉的真问题
+
+| 问题 | 影响 |
+|---|---|
+| `chown hermes:hermes` 残留在容器脚本里 | Dockerfile 已把用户改为 `matlens`，这些 chown 会静默失败（`2>/dev/null \|\| true` 掩盖错误），容器内权限错乱 |
+| s6 服务目录 `main-hermes` | 与 Dockerfile 注释、`stage2-hook.sh` 描述不一致；整体拷贝机制下改名安全 |
+| `install.ps1` 的运行时覆盖逻辑仍读 `$env:HERMES_HOME` | 与参数默认值（已改 `MATLENS_HOME`）矛盾，同一参数走两套路径 |
+| `install.ps1` 默认 `INSTALL_DIR` 用 `hermes-agent` | 与 `install.sh` 的 `matlens-agent` 不一致，两平台装出不同目录名 |
+| 写探针 `touch()` 成功但 `unlink()` 失败 | 探针文件残留，且安装目录被误判为只读；已改为 `finally` 清理 |
+| `.pytest-cache/` 哨兵文件被提交进 git | 测试缓存进了版本控制；已移出跟踪并加进 `.gitignore` |
+
+### 回归验证中揪出的第二批真问题
+
+批次 0 的改动集涉及 40+ 个 Python 测试文件与整个桌面端。跑完 A/B 对比后，**54 项失败中 0 项由本批次引入** —— 逐项归因如下：
+
+| 失败现象 | 数量 | 归因 |
+|---|---|---|
+| `RuntimeError: Could not determine home directory` | 22 | 测试用 `@patch.dict(os.environ, clear=True)` 清空了 `USERPROFILE`，Windows 上 `expanduser("~")` 随之失败。**环境性**，基线同样失败 |
+| `SystemExit: 2`（`test_cmd_update`） | 4 | Windows 并发实例检测触发 `sys.exit(2)` —— 由并行跑测试时残留的 Python 进程引起。单跑通过（307s） |
+| 路径断言不符（`/opt/data/...`、`/opt/homebrew/bin`、`\\` 根） | 6 | Linux 语义断言在 Windows 上必然失败。已用 `git stash` 在基线上复现同样 4 项失败 |
+| `Could not determine home directory` 之外的 SSL 错误 | 若干 | `ssl.SSLContext` 在沙箱环境初始化失败，与代码无关 |
+| dedup / tilde / safe-cwd 等 | 其余 | 基线逐项复现，确认与本批次无关 |
+
+同时发现并修掉三处**本批次该修但没修**的问题：
+
+| 问题 | 影响 |
+|---|---|
+| `matlens-agent.nousresearch.com` 域名在 DNS 上不存在（`curl` 返回 000） | 改名把上游文档站域名一并改了，导致桌面端「在远程安装」、Skills Hub、Discord/Slack 引导链接、模型目录清单全部指向死链。真实上游 `hermes-agent.nousresearch.com` 各路径均返回 200，已按「真实上游引用保持指向原处」的既定原则回退，涉及 13 个文件 |
+| `tools/skills_hub.py` 定义 `HERMES_INDEX_URL` 却引用 `MATLENS_INDEX_URL` | `NameError` —— 集中式索引拉取与陈旧缓存回落两条路径直接崩。已改为 canonical 名并保留旧名别名 |
+| 模型目录回落链的分支名写成 `/main/` | 远端默认分支是 `master`（`/main/` 返回 404，`/master/` 返回 200），回落链实际指向死链。已修正测试断言 |
+
+### 补齐的路径一致性（A2 的最后一环）
+
+批次 0 的目标是让桌面端与 CLI 装到**同一棵目录树**上。验证时发现三处仍不自洽：
+
+| 问题 | 影响 | 修法 |
+|---|---|---|
+| 桌面端 `ACTIVE_HERMES_ROOT` 只认 `hermes-agent`，而 `install.sh` / `install.ps1` 装到 `matlens-agent` | **新装用户桌面端找不到安装** —— 恰好是批次 0 想解决的那类"数据消失"问题 | 改为优先 `matlens-agent`，回落 `hermes-agent`（存量安装继续可用），与 `resolveMatLensHome()` 对 home 根目录的"优先 canonical、接受 legacy"策略同构 |
+| `install.ps1` 参数默认值与运行时覆盖逻辑走两套路径 | 传参与默认落到不同目录 | 三处（参数默认值 / 运行时覆盖 / 完成提示）统一为 `$MATLENS_HOME\matlens-agent`，`HERMES_HOME` 回落时仍用 `hermes-agent` 保住存量 |
+| `install.ps1` 的 extras 正则仍匹配 `hermes-agent[...]` | 项目名已是 `matlens-agent`，`[all]` extras 解析**静默返回空**，可选依赖（cron/pty/mcp/acp 等 9 项）装不上 | 正则改为 `matlens-agent[...]`，已验证解析出 9 项 |
+
+### 仍未覆盖的已知缺口
+
+- **FHS 布局**：Linux root 下 `install.sh` 装到 `/usr/local/lib/matlens-agent`，桌面端只在 `$HERMES_HOME` 下找。基线即如此（非本轮引入），本轮不扩大范围。
+- **`website/` 文档**：按用户决定本轮**不改名**。但其中的 `matlens-agent.nousresearch.com` 死链属功能性问题（DNS 不解析），已单独修掉 —— 只替换域名，不动任何文案与结构。
+
+---
+
+## 9. 尚未处理
+
+- **C1 打包配置**（`appId` / `productName`）—— 高风险批次
+- **D1-D5 磁盘路径迁移** —— 高风险批次，需分两个版本：先只读回落，再主动迁移
+- **E 文档网站**（`website/`）—— 单独 PR
+

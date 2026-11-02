@@ -6,7 +6,7 @@ Usage (via cron with --no-agent):
     matlens cron create matlens-issues \\
       --schedule "*/5 * * * *" --no-agent \\
       --script "$MATLENS_HOME/skills/devops/watchers/scripts/watch_github.py" \\
-      --script-args "--name matlens-issues --repo NousResearch/matlens-agent --scope issues"
+      --script-args "--name matlens-issues --repo yygg693/MatLens-Agent --scope issues"
 
 Set GITHUB_TOKEN (or GH_TOKEN) in the MatLens .env file
 (``${MATLENS_HOME:-~/.matlens}/.env``) to avoid the 60 req/hr

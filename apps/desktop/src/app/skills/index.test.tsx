@@ -279,7 +279,7 @@ describe('SkillsView toolset management', () => {
       window.dispatchEvent(
         new MessageEvent('message', {
           data: { type: 'matlens-skill-pick', name: 'web-research', identifier: 'web-research' },
-          origin: 'https://matlens-agent.nousresearch.com'
+          origin: 'https://hermes-agent.nousresearch.com'
         })
       )
     })

@@ -75,7 +75,7 @@ FAKE_REMOTE="/work/repos/matlens-agent.git"
 # Only used to fetch an old install.sh for the flag probe below; the sandbox does
 # its own fetching. Same override dev-sandbox.sh honours, so a fork can retarget
 # both together.
-UPSTREAM_URL="${MATLENS_DEV_SANDBOX_UPSTREAM:-https://github.com/NousResearch/matlens-agent.git}"
+UPSTREAM_URL="${MATLENS_DEV_SANDBOX_UPSTREAM:-https://github.com/yygg693/MatLens-Agent.git}"
 
 # Installer transcripts live outside the sandbox root: the sandbox is recreated
 # and (unless --keep) deleted, and these logs are the most useful artifact when

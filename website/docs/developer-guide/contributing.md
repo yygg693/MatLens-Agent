@@ -49,7 +49,7 @@ development environment on the same layout the CLI, updater, lazy dependency
 installer, gateway, and docs assume.
 
 ```bash
-curl -fsSL https://matlens-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 cd "${MATLENS_HOME:-$HOME/.matlens}/matlens-agent"
 
 # Add dev/test extras on top of the standard install.

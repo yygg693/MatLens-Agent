@@ -100,7 +100,7 @@ def _discord_request(
         headers={
             "Authorization": f"Bot {token}",
             "Content-Type": "application/json",
-            "User-Agent": "MatLens-Agent (https://github.com/NousResearch/matlens-agent)",
+            "User-Agent": "MatLens-Agent (https://github.com/yygg693/MatLens-Agent)",
         },
     )
 

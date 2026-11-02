@@ -90,7 +90,12 @@ function validateKeyPath(keyPath) {
 
 const _REDACTIONS: Array<[RegExp, string]> = [
   [/(MATLENS_DASHBOARD_SESSION_TOKEN=)(\S+)/g, '$1<redacted>'],
+  // The pre-rename name is still emitted by the desktop (it keeps working
+  // against backends that predate the rename), so it must be scrubbed too —
+  // otherwise the token lands verbatim in desktop.log.
+  [/(HERMES_DASHBOARD_SESSION_TOKEN=)(\S+)/g, '$1<redacted>'],
   [/(X-MatLens-Session-Token["']?\s*[:=]\s*["']?)([^\s"'&]+)/gi, '$1<redacted>'],
+  [/(X-Hermes-Session-Token["']?\s*[:=]\s*["']?)([^\s"'&]+)/gi, '$1<redacted>'],
   [/(Authorization["']?\s*:\s*Bearer\s+)(\S+)/gi, '$1<redacted>'],
   [/([?&](?:token|ticket)=)([^\s&"']+)/gi, '$1<redacted>']
 ]

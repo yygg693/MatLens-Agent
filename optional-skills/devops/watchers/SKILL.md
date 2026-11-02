@@ -66,7 +66,7 @@ Watch a GitHub repo (set `GITHUB_TOKEN` in `${MATLENS_HOME:-~/.matlens}/.env` to
 
 ```bash
 python $MATLENS_HOME/skills/devops/watchers/scripts/watch_github.py \
-  --name matlens-issues --repo NousResearch/matlens-agent --scope issues
+  --name matlens-issues --repo yygg693/MatLens-Agent --scope issues
 ```
 
 Poll an arbitrary JSON API:

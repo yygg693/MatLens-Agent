@@ -51,7 +51,7 @@ That does not stop MatLens from working well as a phone-native CLI agent — it 
 MatLens now ships a Termux-aware installer path:
 
 ```bash
-curl -fsSL https://matlens-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 On Termux, the installer automatically:

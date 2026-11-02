@@ -3,7 +3,7 @@
   "updated_at": "2026-08-14T17:59:48Z",
   "metadata": {
     "source": "matlens-agent repo",
-    "docs": "https://matlens-agent.nousresearch.com/docs/reference/model-catalog"
+    "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
   },
   "providers": {
     "openrouter": {

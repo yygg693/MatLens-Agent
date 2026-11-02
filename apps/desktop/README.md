@@ -69,7 +69,7 @@ Point the app at a specific source checkout, or sandbox it away from your real c
 ```bash
 # throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
 ../scripts/dev-sandbox.sh npm run dev
-HERMES_DESKTOP_HERMES_ROOT=/path/to/clone npm run dev
+MATLENS_DESKTOP_MATLENS_ROOT=/path/to/clone npm run dev
 HERMES_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
@@ -104,7 +104,7 @@ The app has three boundaries:
 
 Backend resolution is an ordered ladder:
 
-1. `HERMES_DESKTOP_HERMES_ROOT`
+1. `MATLENS_DESKTOP_MATLENS_ROOT`
 2. the current source checkout during development
 3. a completed managed install
 4. `HERMES_DESKTOP_HERMES`, or `hermes` on `PATH`

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   matlens:
     tags: [matlens, setup, configuration, multi-agent, spawning, cli, gateway, themes, skins, desktop-plugins, tui-widgets, petdex, development]
-    homepage: https://github.com/NousResearch/matlens-agent
+    homepage: https://github.com/yygg693/MatLens-Agent
     related_skills: [claude-code, codex, opencode]
 ---
 
@@ -38,7 +38,7 @@ Good verification targets:
 
 - CLI commands: `matlens --help`, `matlens <command> --help`, and `matlens_cli/main.py`
 - User documentation: https://hermes-agent.nousresearch.com/docs/
-- Source tree: https://github.com/NousResearch/matlens-agent
+- Source tree: https://github.com/yygg693/MatLens-Agent
 
 ## Quick Start
 

@@ -185,7 +185,7 @@ def _local_runtime_hint(reason: str | None) -> str:
     selected local_embedded without going through ``matlens memory setup`` — a
     hand-written config, the legacy ``"mode": "local"`` alias, or a restored
     backup — hits ``ModuleNotFoundError: No module named 'hindsight'``.
-    NousResearch/matlens-agent#7718.
+    NousResearch/hermes-agent#7718.
     """
     text = (reason or "").lower()
     if "no module named" in text and ("hindsight'" in text or 'hindsight"' in text
@@ -1914,7 +1914,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Opt-in: recall synchronously against the *current* message so the
         # injected memories match this turn's query rather than the previous
-        # turn's queued recall. See NousResearch/matlens-agent#5820.
+        # turn's queued recall. See NousResearch/hermes-agent#5820.
         if self._recall_sync:
             if self._recall_disabled():
                 self._record_recall_indicator(returned=False, count=0)

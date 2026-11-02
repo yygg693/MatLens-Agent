@@ -27,6 +27,15 @@ from matlens_constants import get_matlens_home
 logger = logging.getLogger(__name__)
 
 # Canonical index location. Override via config key ``plugins.index_url``.
+#
+# This points at Nous's plugin-index *service*, not at this repository — it is
+# an upstream dependency, so the MatLens rename does not apply to it.  Note
+# that the repository is currently not publicly reachable (the GitHub API
+# answers 404 for it, and so do both ``main`` and ``master`` raw paths).  The
+# bundled seed below is what actually keeps plugin discovery working offline;
+# a fresh install falls back to it and only reaches for the remote when it is
+# reachable.  Deployments that run their own index should set
+# ``plugins.index_url`` rather than relying on this default.
 DEFAULT_INDEX_URL = (
     "https://raw.githubusercontent.com/NousResearch/matlens-plugin-index/main/index.json"
 )

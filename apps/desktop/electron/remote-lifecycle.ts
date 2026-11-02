@@ -140,7 +140,7 @@ async function locateMatLens(ssh, remoteMatLensPath) {
     //   - version checking: `<python> --version` printed "Python x.y.z" instead of
     //     the MatLens version, and
     //   - capability probing: `<python> serve --help` failed entirely.
-    // See https://github.com/NousResearch/matlens-agent/issues/74411
+    // See https://github.com/NousResearch/hermes-agent/issues/74411
     return candidate
   }
 
@@ -200,7 +200,7 @@ async function locateMatLens(ssh, remoteMatLensPath) {
 
   const err: any = new Error(
     'MatLens is not installed on the remote host (could not find a `matlens` executable). ' +
-      'Install it on the remote with:  curl -fsSL https://matlens-agent.nousresearch.com/install.sh | sh  ' +
+      'Install it on the remote with:  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh  ' +
       '— or set the MatLens path explicitly in the SSH connection settings.'
   )
 

@@ -328,7 +328,7 @@ import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './work
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
-const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
+const USER_DATA_OVERRIDE = process.env.MATLENS_DESKTOP_USER_DATA_DIR
 
 if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
@@ -336,8 +336,8 @@ if (USER_DATA_OVERRIDE) {
   app.setPath('userData', resolvedUserData)
 }
 
-const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
-const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+const DEV_SERVER = process.env.MATLENS_DESKTOP_DEV_SERVER
+const IS_PACKAGED = app.isPackaged || Boolean(process.env.MATLENS_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -621,61 +621,79 @@ if (INSTALL_STAMP) {
   )
 }
 
-// HERMES_HOME — the user-facing root for everything Hermes-related. Mirrors
-// scripts/install.ps1's $HermesHome and scripts/install.sh's $HERMES_HOME.
+// MATLENS_HOME — the user-facing root for everything MatLens-related.
 //
-// Defaults:
-//   Windows: %LOCALAPPDATA%\hermes (matches install.ps1)
-//   macOS / Linux: ~/.hermes (matches install.sh)
+// Authority: the *backend* defines where user data lives. It reads
+// ``MATLENS_HOME`` and falls back to ``~/.matlens`` (see
+// ``matlens_constants._get_platform_default_matlens_home``), so the desktop
+// MUST resolve to the same directory — otherwise the two halves read two
+// different config trees and the user's providers / memories / sessions
+// "vanish" from one side.
 //
-// Special case for Windows: if the user has a legacy ~/.hermes directory
-// (e.g., from a prior pip install or a manual setup) AND no
-// %LOCALAPPDATA%\hermes yet, prefer the legacy path so we don't orphan their
-// existing config / sessions / .env. New installs go to %LOCALAPPDATA%.
+// Resolution order:
+//   1. MATLENS_HOME          (canonical name)
+//   2. HERMES_HOME           (legacy name — kept so an existing `setx` still
+//                             resolves; the backend accepts it too)
+//   3. ~/.matlens            (the backend's default — the single source of
+//                             truth for where data lives)
+//
+// Legacy `~/.hermes` / `%LOCALAPPDATA%\hermes` trees are still honoured when
+// they actually exist, so a user who set one up before the rename does not
+// lose their state.
 //
 // HERMES_DESKTOP_USER_DATA_DIR (used by test:desktop:fresh) puts the sandbox
-// HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
-// touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
-function resolveHermesHome() {
+// home beneath the throwaway userData dir so a fresh-install run never
+// touches the user's real ~/.matlens.
+function resolveMatLensHome() {
+  if (process.env.MATLENS_HOME) {
+    return normalizeMatLensHomeRoot(process.env.MATLENS_HOME)
+  }
+
   if (process.env.HERMES_HOME) {
     return normalizeMatLensHomeRoot(process.env.HERMES_HOME)
   }
 
   if (USER_DATA_OVERRIDE) {
-    return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+    return path.join(path.resolve(USER_DATA_OVERRIDE), 'matlens-home')
   }
 
   if (IS_WINDOWS) {
     // A GUI app launched from Explorer inherits the environment block captured
-    // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
+    // at login, so a value set via `setx` AFTER login is invisible in
     // process.env even though the CLI (a fresh shell) sees it. Without this the
-    // backend silently falls back to %LOCALAPPDATA%\hermes and reports "No
-    // inference provider configured" despite a valid configured home (#45471).
+    // backend silently falls back to its own default and reports "No inference
+    // provider configured" despite a valid configured home (#45471).
     // Consult the live User-scoped registry value before the default below.
-    const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
+    const fromRegistry = readWindowsUserEnvVar('MATLENS_HOME') || readWindowsUserEnvVar('HERMES_HOME')
 
     if (fromRegistry) {
       return normalizeMatLensHomeRoot(fromRegistry)
     }
   }
 
+  const canonicalHome = path.join(app.getPath('home'), '.matlens')
+
+  // A pre-rename install may still have its data under ~/.hermes. Prefer the
+  // canonical directory only when the legacy one is absent, so nobody loses
+  // their config to the rename.
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
-    const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
-    const legacy = path.join(app.getPath('home'), '.hermes')
+    const localappdataLegacy = path.join(process.env.LOCALAPPDATA, 'hermes')
 
-    // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
-    // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
-    if (!directoryExists(localappdata) && directoryExists(legacy)) {
-      return legacy
+    if (!directoryExists(canonicalHome) && directoryExists(localappdataLegacy)) {
+      return localappdataLegacy
     }
-
-    return localappdata
   }
 
-  return path.join(app.getPath('home'), '.hermes')
+  const legacyHome = path.join(app.getPath('home'), '.hermes')
+
+  if (!directoryExists(canonicalHome) && directoryExists(legacyHome)) {
+    return legacyHome
+  }
+
+  return canonicalHome
 }
 
-const HERMES_HOME = resolveHermesHome()
+const HERMES_HOME = resolveMatLensHome()
 
 function pathWithHermesManagedNode(...entries) {
   const managed = matlensManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
@@ -683,10 +701,23 @@ function pathWithHermesManagedNode(...entries) {
   return [...managed, ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
 }
 
-// ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
+// ACTIVE_HERMES_ROOT — the canonical mutable install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
 // up with identical layouts and can share one install.
-const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
+//
+// The install directory is named `matlens-agent` for a fresh install, but a
+// pre-rename install lives in `hermes-agent`. Prefer the canonical name and
+// fall back to the legacy one so an existing install keeps working — the same
+// "prefer canonical, accept legacy" rule `resolveMatLensHome()` applies to the
+// home root itself. Without the fallback a desktop-only user who installed
+// before the rename would silently lose their install.
+const ACTIVE_HERMES_ROOT = (() => {
+  const canonical = path.join(HERMES_HOME, 'matlens-agent')
+  if (directoryExists(canonical)) {
+    return canonical
+  }
+  return path.join(HERMES_HOME, 'hermes-agent')
+})()
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
@@ -752,15 +783,15 @@ const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
 const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
-const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
-const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
+const BOOT_FAKE_MODE = process.env.MATLENS_DESKTOP_BOOT_FAKE === '1'
+const BOOT_FAKE_ERROR = process.env.MATLENS_DESKTOP_BOOT_FAKE_ERROR || ''
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
-const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
+const SKIP_QUIT_CONFIRM = process.env.MATLENS_DESKTOP_SKIP_QUIT_CONFIRM === '1'
 
 const BOOT_FAKE_STEP_MS = (() => {
-  const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
+  const raw = Number.parseInt(String(process.env.MATLENS_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
 
   if (!Number.isFinite(raw) || raw <= 0) {
     return 650
@@ -769,7 +800,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const APP_NAME = process.env.MATLENS_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1166,8 +1197,8 @@ const backendPool = new Map() // profile -> { process, port, token, connectionPr
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
-const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
-const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
+const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.MATLENS_DESKTOP_POOL_MAX) || 3)
+const POOL_IDLE_MS = Math.max(60_000, Number(process.env.MATLENS_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
 // A backend touched within this window has a live renderer socket (the keepalive
 // pings every 60s for every open profile). LRU eviction must spare these — a
 // concurrent multi-profile session keeps several backends "fresh" at once, and
@@ -2064,7 +2095,12 @@ function backendSupportsServe(backend) {
       // and its timeout-only retry instead of a thinner local bound.
       execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
         cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
+        env: {
+          ...process.env,
+          MATLENS_HOME: HERMES_HOME,
+          HERMES_HOME,
+          ...(backend.env || {})
+        },
         timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
         // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
@@ -2143,7 +2179,7 @@ function isHermesSourceRoot(root) {
 }
 
 function findPythonForRoot(root) {
-  const override = process.env.HERMES_DESKTOP_PYTHON
+  const override = process.env.MATLENS_DESKTOP_PYTHON
 
   if (override && fileExists(override)) {
     return override
@@ -2521,7 +2557,7 @@ function writeZoomState(zoomLevel) {
 // HERMES_DESKTOP_HERMES_ROOT always wins so devs can pin a worktree.
 function resolveUpdateRoot() {
   const candidates = [
-    process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
+    process.env.MATLENS_DESKTOP_MATLENS_ROOT && path.resolve(process.env.MATLENS_DESKTOP_MATLENS_ROOT),
     !IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT) ? SOURCE_REPO_ROOT : null,
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : null
   ].filter(Boolean)
@@ -3524,6 +3560,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         cwd: HERMES_HOME,
         env: {
           ...process.env,
+          // The update helper runs `matlens update`, whose Python side reads
+          // MATLENS_HOME. Pin it to the same tree the desktop resolved so the
+          // updater operates on the install the desktop actually manages.
+          MATLENS_HOME: HERMES_HOME,
           HERMES_HOME,
           PATH: pathWithHermesManagedNode(venvBin)
         },
@@ -3550,6 +3590,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         cwd: HERMES_HOME,
         env: {
           ...process.env,
+          // The update helper runs `matlens update`, whose Python side reads
+          // MATLENS_HOME. Pin it to the same tree the desktop resolved so the
+          // updater operates on the install the desktop actually manages.
+          MATLENS_HOME: HERMES_HOME,
           HERMES_HOME,
           PATH: pathWithHermesManagedNode(venvBin)
         },
@@ -4030,7 +4074,7 @@ function writeBootstrapMarker(payload) {
 }
 
 function resolveWebDist() {
-  const override = process.env.HERMES_DESKTOP_WEB_DIST
+  const override = process.env.MATLENS_DESKTOP_WEB_DIST
 
   if (override && directoryExists(path.resolve(override))) {
     return path.resolve(override)
@@ -4135,7 +4179,7 @@ function resolveHermesCwd() {
   // real directory), then the home dir.
   const candidates = [
     readDefaultProjectDir(),
-    process.env.HERMES_DESKTOP_CWD,
+    process.env.MATLENS_DESKTOP_CWD,
     IS_PACKAGED ? null : process.env.INIT_CWD,
     IS_PACKAGED ? null : process.cwd(),
     !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
@@ -4277,7 +4321,7 @@ function createActiveBackend(backendArgs) {
 function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
-  const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+  const overrideRoot = process.env.MATLENS_DESKTOP_MATLENS_ROOT && path.resolve(process.env.MATLENS_DESKTOP_MATLENS_ROOT)
 
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
     const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
@@ -4328,9 +4372,9 @@ function resolveHermesBackend(backendArgs) {
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
   //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
+  if (process.env.MATLENS_DESKTOP_IGNORE_EXISTING !== '1') {
     let hermesCommand = null
-    const hermesOverride = process.env.HERMES_DESKTOP_HERMES
+    const hermesOverride = process.env.MATLENS_DESKTOP_MATLENS
 
     if (hermesOverride) {
       const resolvedOverride = findOnPath(hermesOverride)
@@ -4665,6 +4709,9 @@ function fetchJson(url, token, options: any = {}) {
         method: options.method || 'GET',
         headers: {
           'Content-Type': contentType,
+          // The backend reads X-MatLens-Session-Token. The legacy name is sent
+          // alongside it so a not-yet-renamed backend still authenticates.
+          'X-MatLens-Session-Token': token,
           'X-Hermes-Session-Token': token,
           // RFC 8252 native flow authenticates the gated gateway with a bearer
           // token instead of the loopback session-token header. When
@@ -4764,6 +4811,7 @@ function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
       {
         method: 'GET',
         headers: {
+          'X-MatLens-Session-Token': token,
           'X-Hermes-Session-Token': token
         }
       },
@@ -7218,7 +7266,14 @@ async function freshGatewayWsUrl(profile) {
 const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
 
 function resolvePortalBaseUrl() {
-  const raw = process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
+  // The backend reads MATLENS_PORTAL_BASE_URL (see matlens_cli/auth.py); the
+  // legacy HERMES_ name and the shared NOUS_ name are still honoured so a
+  // single override flips every MatLens surface to the same portal.
+  const raw =
+    process.env.MATLENS_PORTAL_BASE_URL ||
+    process.env.HERMES_PORTAL_BASE_URL ||
+    process.env.NOUS_PORTAL_BASE_URL ||
+    DEFAULT_NOUS_PORTAL_URL
 
   return String(raw).trim().replace(/\/+$/, '')
 }
@@ -8117,7 +8172,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
-  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+  const envOverride = key ? false : Boolean(process.env.MATLENS_DESKTOP_REMOTE_URL)
   const savedMode = key ? scoped?.mode : config.mode
   const ssh = savedMode === 'ssh' ? normalizeSshConfig(block) : null
 
@@ -8125,7 +8180,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+  const remoteUrl = envOverride ? String(process.env.MATLENS_DESKTOP_REMOTE_URL || '') : String(block.url || '')
   const mode = envOverride ? 'remote' : savedMode === 'ssh' ? 'ssh' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
   // Whether the OS keyring (safeStorage) can encrypt the saved token. When
@@ -8521,7 +8576,7 @@ function activeSshTerminalTarget() {
     return null
   }
 
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+  if (process.env.MATLENS_DESKTOP_REMOTE_URL) {
     return null
   }
 
@@ -8761,14 +8816,14 @@ async function resolveRemoteBackend(profile) {
   }
 
   // 2. Env override (global, token-auth only).
-  const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
-  const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
+  const rawEnvUrl = process.env.MATLENS_DESKTOP_REMOTE_URL
+  const rawEnvToken = process.env.MATLENS_DESKTOP_REMOTE_TOKEN
 
   if (rawEnvUrl) {
     if (!rawEnvToken) {
       throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
+        'MATLENS_DESKTOP_REMOTE_URL is set but MATLENS_DESKTOP_REMOTE_TOKEN is not. ' +
+          'Both must be provided to connect to a remote MatLens backend.'
       )
     }
 
@@ -8825,7 +8880,7 @@ function configuredRemoteProfileNames() {
 // profile via ?profile=. Cloud counts — it resolves to a remote backend (Q6).
 // Distinct from per-profile overrides — here there's one host for all.
 function globalRemoteActive() {
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+  if (process.env.MATLENS_DESKTOP_REMOTE_URL) {
     return true
   }
 
@@ -9566,22 +9621,34 @@ async function spawnPoolBackend(profile, entry) {
       cwd: hermesCwd,
       env: {
         ...process.env,
+        // The backend reads MATLENS_HOME to decide where config, memories,
+        // sessions and skills live. It must point at the SAME tree the
+        // desktop resolved above — otherwise the two halves read two
+        // different config directories and the user's setup appears to
+        // vanish. HERMES_HOME is kept alongside for older backends that
+        // still read the legacy name.
+        MATLENS_HOME: HERMES_HOME,
         HERMES_HOME,
         ...backend.env,
         // Pin the gateway's tool/terminal cwd to the same directory we chose for
         // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
         // can still point at the install dir even when spawn cwd is home.
         TERMINAL_CWD: hermesCwd,
+        MATLENS_DASHBOARD_SESSION_TOKEN: token,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // scheduler tick loop (the gateway isn't running under the app).
+        MATLENS_DESKTOP: '1',
         HERMES_DESKTOP: '1',
         // Exact parent identity lets the backend self-exit after an unclean
         // Desktop death without mistaking a reused PID for its owner. If the
         // optional marker probe fails, retain legacy PID-only tracking.
         ...parentIdentityEnv,
+        MATLENS_WEB_DIST: webDist,
         HERMES_WEB_DIST: webDist,
-        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        ...(readyFile
+          ? { MATLENS_DESKTOP_READY_FILE: readyFile, HERMES_DESKTOP_READY_FILE: readyFile }
+          : {})
       },
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -9897,27 +9964,33 @@ async function startHermes() {
         cwd: hermesCwd,
         env: {
           ...process.env,
-          // Explicitly pin HERMES_HOME for the child so Python's get_matlens_home()
-          // resolves to the SAME location our resolveHermesHome() picked. Without
-          // this pin, Python falls back to ~/.hermes on every platform — fine on
-          // mac/linux (where our default matches), but on Windows our default is
-          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+          // Explicitly pin MATLENS_HOME for the child so Python's
+          // get_matlens_home() resolves to the SAME location our
+          // resolveMatLensHome() picked. Without this pin, Python falls back to
+          // its own platform default — which differs from ours on Windows.
           // Mismatch would split config / sessions / .env / logs across two
-          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+          // directories. install.ps1 sets the value via setx; the desktop
           // can't reliably do that, so we set it inline for every spawn.
+          // HERMES_HOME rides along for backends that still read the old name.
+          MATLENS_HOME: HERMES_HOME,
           HERMES_HOME,
           ...backend.env,
           TERMINAL_CWD: hermesCwd,
+          MATLENS_DASHBOARD_SESSION_TOKEN: token,
           HERMES_DASHBOARD_SESSION_TOKEN: token,
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
+          MATLENS_DESKTOP: '1',
           HERMES_DESKTOP: '1',
           // Exact parent identity lets the backend self-exit after an unclean
           // Desktop death without mistaking a reused PID for its owner. If the
           // optional marker probe fails, retain legacy PID-only tracking.
           ...parentIdentityEnv,
+          MATLENS_WEB_DIST: webDist,
           HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+          ...(readyFile
+            ? { MATLENS_DESKTOP_READY_FILE: readyFile, HERMES_DESKTOP_READY_FILE: readyFile }
+            : {})
         },
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
@@ -13302,7 +13375,7 @@ function terminalShellCommand() {
   // name on PATH); $SHELL is honored on POSIX, where it's the user's canonical
   // choice, but ignored on Windows, where it's usually a stray MSYS/Git path
   // node-pty can't spawn natively.
-  const override = (process.env.HERMES_DESKTOP_SHELL || (IS_WINDOWS ? '' : process.env.SHELL) || '').trim()
+  const override = (process.env.MATLENS_DESKTOP_SHELL || (IS_WINDOWS ? '' : process.env.SHELL) || '').trim()
 
   if (override) {
     const resolved = isExecutableFile(override) ? override : findOnPath(override)
@@ -13358,9 +13431,10 @@ function terminalShellEnv() {
   env.TERM_PROGRAM = 'Hermes'
   env.TERM_PROGRAM_VERSION = app.getVersion()
 
-  // Let a hermes/--tui launched in this pane know it's embedded in the desktop
-  // GUI (build_environment_hints surfaces this). Distinct from HERMES_DESKTOP,
+  // Let a matlens/--tui launched in this pane know it's embedded in the desktop
+  // GUI (build_environment_hints surfaces this). Distinct from MATLENS_DESKTOP,
   // which marks the agent *backend* and gates cron/gateway behavior.
+  env.MATLENS_DESKTOP_TERMINAL = '1'
   env.HERMES_DESKTOP_TERMINAL = '1'
 
   return env
@@ -14072,15 +14146,21 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00, or
-// hermes://mcp/install?name=NAME&config=B64 — the vendor "Add to Hermes"
+// matlens:// deep links (e.g. matlens://blueprint/morning-brief?time=08:00, or
+// matlens://mcp/install?name=NAME&config=B64 — the vendor "Add to MatLens"
 // button). Parsing is generic ({kind, name, params}); the renderer routes per
 // kind and anything install-shaped requires explicit user confirmation there.
 // A docs/dashboard "Send to App" button opens this URL; we route it into the
 // running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
+//
+// The pre-rename scheme was `hermes://`. It is accepted on the parsing side
+// for one compatibility window so links minted by an older page still open
+// the app, but only `matlens://` is registered with the OS — so a fresh
+// install claims the new scheme and the old one is released.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = 'hermes'
+const MATLENS_PROTOCOL = 'matlens'
+const LEGACY_PROTOCOLS = ['hermes']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
@@ -14089,7 +14169,11 @@ function _extractDeepLink(argv) {
     return null
   }
 
-  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+  const schemes = [MATLENS_PROTOCOL, ...LEGACY_PROTOCOLS]
+
+  return (
+    argv.find(a => typeof a === 'string' && schemes.some(scheme => a.startsWith(`${scheme}://`))) || null
+  )
 }
 
 function handleDeepLink(url) {
@@ -14144,7 +14228,7 @@ ipcMain.handle('hermes:deep-link-ready', () => {
     const queued = _pendingDeepLink
     _pendingDeepLink = null
     handleDeepLink(
-      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
+      `${MATLENS_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
         (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
     )
   }
@@ -14157,9 +14241,9 @@ function registerDeepLinkProtocol() {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
       // relaunch us with the URL.
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+      app.setAsDefaultProtocolClient(MATLENS_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
     } else {
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
+      app.setAsDefaultProtocolClient(MATLENS_PROTOCOL)
     }
   } catch (err) {
     rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
