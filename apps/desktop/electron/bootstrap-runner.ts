@@ -89,14 +89,23 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
     return null
   }
 
-  try {
-    const raw = fs.readFileSync(path.join(activeRoot, '.matlens-bootstrap-complete'), 'utf8')
-    const parsed = JSON.parse(raw)
+  // Canonical name first, legacy second — a tree installed before the rename
+  // carries only `.hermes-bootstrap-complete`, and re-pinning to HEAD there
+  // would move the pin off the commit the install actually ran against.
+  for (const markerName of ['.matlens-bootstrap-complete', '.hermes-bootstrap-complete']) {
+    try {
+      const raw = fs.readFileSync(path.join(activeRoot, markerName), 'utf8')
+      const parsed = JSON.parse(raw)
 
-    return parsed && isPinnedCommit(parsed.pinnedCommit) ? parsed.pinnedCommit : null
-  } catch {
-    return null
+      if (parsed && isPinnedCommit(parsed.pinnedCommit)) {
+        return parsed.pinnedCommit
+      }
+    } catch {
+      // absent or unreadable => try the next candidate
+    }
   }
+
+  return null
 }
 
 /**

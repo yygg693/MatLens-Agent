@@ -1,12 +1,15 @@
 //! Filesystem paths + logging setup.
 //!
-//! Mirrors `hermes_constants.get_hermes_home()` from the Python CLI:
-//!   Windows: %LOCALAPPDATA%\hermes
-//!   macOS:   ~/.hermes
-//!   Linux:   ~/.hermes  (override via $HERMES_HOME)
+//! Mirrors `matlens_constants.get_matlens_home()` from the Python CLI and
+//! `resolveMatLensHome()` from the Electron desktop:
+//!   Windows: %USERPROFILE%\.matlens
+//!   macOS:   ~/.matlens
+//!   Linux:   ~/.matlens
 //!
-//! NOTE (macOS): Python's get_hermes_home(), scripts/install.sh, and the
-//! Electron desktop's resolveHermesHome() ALL use ~/.hermes on macOS — there
+//! Override via $MATLENS_HOME (canonical) or $HERMES_HOME (pre-rename name).
+//!
+//! NOTE (macOS): Python's get_matlens_home(), scripts/install.sh, and the
+//! Electron desktop's resolveMatLensHome() ALL use ~/.matlens on macOS — there
 //! is no ~/Library/Application Support branch anywhere else. An earlier
 //! version of this file used Application Support, which drifted from every
 //! other component: the installer wrote the install to one dir and the
@@ -21,31 +24,111 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing_appender::non_blocking::WorkerGuard;
 
-/// Returns the canonical Hermes home directory, respecting $HERMES_HOME if set.
+/// Returns the canonical MatLens home directory.
+///
+/// Resolution order — mirrors the Electron desktop's `resolveMatLensHome()`
+/// and the Python `matlens_constants.get_matlens_home()`:
+///
+///   1. `$MATLENS_HOME`        (canonical)
+///   2. `$HERMES_HOME`         (pre-rename name, still honoured)
+///   3. a pre-rename tree that actually exists (`~/.hermes`,
+///      `%LOCALAPPDATA%\hermes`)
+///   4. the canonical default `~/.matlens`
+///
+/// Step 3 is what keeps pre-rename installs working: an existing legacy tree
+/// wins over the canonical default, so the rename never strands a user's
+/// config, memories or sessions.
+///
+/// The default is `~/.matlens` on EVERY platform, Windows included. The
+/// Python backend deliberately moved away from `%LOCALAPPDATA%\matlens`
+/// (30+ call sites hard-code `~/.matlens`), and `scripts/install.ps1` /
+/// `scripts/install.sh` / the Electron desktop all agree on `~/.matlens` —
+/// a Windows-only `%LOCALAPPDATA%` default here would put the installer on a
+/// third tree that nothing else reads.
 pub fn hermes_home() -> PathBuf {
-    if let Ok(override_path) = std::env::var("HERMES_HOME") {
+    if let Ok(override_path) = std::env::var("MATLENS_HOME") {
         if !override_path.trim().is_empty() {
             return PathBuf::from(override_path);
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        // %LOCALAPPDATA%\hermes — matches scripts/install.ps1's $HermesHome.
-        if let Some(local_app_data) = dirs::data_local_dir() {
-            return local_app_data.join("hermes");
+    if let Ok(legacy_path) = std::env::var("HERMES_HOME") {
+        if !legacy_path.trim().is_empty() {
+            return PathBuf::from(legacy_path);
         }
     }
 
-    // macOS + Linux + fallback: ~/.hermes (matches Python get_hermes_home(),
-    // install.sh, and the Electron desktop's resolveHermesHome()).
+    let canonical = default_home_root();
+
+    if canonical.exists() {
+        return canonical;
+    }
+
+    for legacy in legacy_home_roots() {
+        if legacy.exists() {
+            return legacy;
+        }
+    }
+
+    canonical
+}
+
+/// The canonical default home root — `~/.matlens` on every platform.
+fn default_home_root() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
-        return home.join(".hermes");
+        return home.join(".matlens");
     }
 
     // Last resort — current dir, almost certainly wrong but at least
     // doesn't panic.
-    PathBuf::from(".hermes")
+    PathBuf::from(".matlens")
+}
+
+/// Pre-rename home roots, checked only when the canonical one is absent.
+fn legacy_home_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+
+    // Where this installer used to install on Windows.
+    #[cfg(target_os = "windows")]
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        roots.push(local_app_data.join("hermes"));
+    }
+
+    // Where it used to install on macOS / Linux, and where the Python
+    // backend's pre-rename default pointed.
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".hermes"));
+    }
+
+    roots
+}
+
+/// The install directory inside the given home root.
+///
+/// A fresh install lands in `matlens-agent`; a pre-rename install lives in
+/// `hermes-agent`. Prefer the canonical name but fall back to the legacy one
+/// when only the legacy one exists, so an existing install keeps working —
+/// the same "prefer canonical, accept legacy" rule the Electron desktop
+/// applies to `ACTIVE_HERMES_ROOT`.
+pub fn install_root_in(home: &Path) -> PathBuf {
+    let canonical = home.join("matlens-agent");
+
+    if canonical.exists() {
+        return canonical;
+    }
+
+    let legacy = home.join("hermes-agent");
+
+    if legacy.exists() {
+        return legacy;
+    }
+
+    canonical
+}
+
+/// The install directory inside the resolved home root.
+pub fn active_install_root() -> PathBuf {
+    install_root_in(&hermes_home())
 }
 
 pub fn log_dir() -> PathBuf {
@@ -62,32 +145,49 @@ pub fn bootstrap_cache_dir() -> PathBuf {
 
 /// Stable location the installer copies itself to after a successful install.
 /// The desktop app re-invokes this with `--update`, and the start-menu /
-/// desktop shortcuts can point users back to it. Lives directly under
-/// HERMES_HOME so it survives repo checkout deletion (unlike anything under
-/// hermes-agent/).
+/// desktop shortcuts can point users back to it. Lives directly under the home
+/// root so it survives repo checkout deletion (unlike anything under
+/// `matlens-agent/`).
 ///
-/// On Windows this is `%LOCALAPPDATA%\hermes\hermes-setup.exe`; on other
-/// platforms the extension differs but the directory is the same.
+/// On Windows this is `%USERPROFILE%\.matlens\matlens-setup.exe`; on other
+/// platforms the extension differs but the directory is the same. The name
+/// matches what the Electron desktop looks for in
+/// `resolveStagedUpdaterBinary()`.
 pub fn installer_dest() -> PathBuf {
     let name = if cfg!(target_os = "windows") {
-        "hermes-setup.exe"
+        "matlens-setup.exe"
     } else {
-        "hermes-setup"
+        "matlens-setup"
     };
     hermes_home().join(name)
 }
 
+/// Canonical name of the update-in-progress marker, shared with the Python
+/// CLI (`matlens_cli/update_lock.py`) and the Electron desktop
+/// (`apps/desktop/electron/update-marker.ts`).
+pub const UPDATE_MARKER_NAME: &str = ".matlens-update-in-progress";
+
+/// Pre-rename name of the update-in-progress marker. Still honoured on read:
+/// a marker written by a pre-rename updater or desktop must keep blocking a
+/// second updater, otherwise two updaters mutate one checkout at once.
+pub const LEGACY_UPDATE_MARKER_NAME: &str = ".hermes-update-in-progress";
+
 /// Marker the updater writes for the duration of an in-app update and removes
 /// when it finishes (see update.rs `UpdateMarkerGuard`). A freshly-launched
 /// desktop checks this before spawning its own local backend: spawning one
-/// mid-update re-locks the venv shim and triggers `force_kill_other_hermes`,
+/// mid-update re-locks the venv shim and triggers `force_kill_other_matlens`,
 /// which then kills that legitimate backend in a respawn loop (#50238).
 ///
-/// Lives directly under HERMES_HOME (same rationale as `installer_dest`) so the
-/// Electron desktop — which resolves HERMES_HOME identically and pins it into
-/// the updater's env — agrees on the exact path.
+/// Lives directly under the home root (same rationale as `installer_dest`) so
+/// the Electron desktop — which resolves the home root identically and pins it
+/// into the updater's env — agrees on the exact path.
+///
+/// The name is the canonical `.matlens-update-in-progress`, matching the
+/// desktop's `markerPath()`. A pre-rename marker under the legacy name is
+/// still *read* (see `legacy_update_in_progress_marker`) so an update started
+/// by an older installer keeps gating launches.
 pub fn update_in_progress_marker() -> PathBuf {
-    hermes_home().join(".hermes-update-in-progress")
+    hermes_home().join(UPDATE_MARKER_NAME)
 }
 
 /// Copy the currently-running installer binary to `installer_dest()` so it's
@@ -125,7 +225,7 @@ pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
     }
     std::fs::copy(&src, &dest)?;
     repair_macos_installer_helper(&dest);
-    tracing::info!(?src, ?dest, "copied installer to HERMES_HOME");
+    tracing::info!(?src, ?dest, "copied installer to the MatLens home root");
     Ok(())
 }
 
@@ -157,11 +257,27 @@ fn repair_macos_installer_helper(_path: &Path) {}
 
 /// Where the bootstrap-complete marker lives (existence-only for the Rust
 /// installer fast path; JSON schema-checked by the Electron app). Per main.ts:
-///   const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
+///   const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.matlens-bootstrap-complete')
 /// We don't always know ACTIVE_HERMES_ROOT until install.ps1 reports it, so
 /// this is a probe helper, not a definitive path.
 pub fn likely_bootstrap_marker(install_root: &Path) -> PathBuf {
+    install_root.join(".matlens-bootstrap-complete")
+}
+
+/// Legacy name of the bootstrap-complete marker, written by pre-rename builds
+/// of install.ps1, install.sh and this installer.
+pub fn legacy_bootstrap_marker(install_root: &Path) -> PathBuf {
     install_root.join(".hermes-bootstrap-complete")
+}
+
+/// Whether a bootstrap-complete marker exists under `install_root` — canonical
+/// name first, legacy name second.
+///
+/// The legacy name is honoured so a tree installed before the rename still
+/// takes the "already installed" fast path. Without it every launch of a
+/// pre-rename install would re-run the whole first-launch bootstrap.
+pub fn bootstrap_marker_exists(install_root: &Path) -> bool {
+    likely_bootstrap_marker(install_root).exists() || legacy_bootstrap_marker(install_root).exists()
 }
 
 /// Initializes tracing to bootstrap-installer.log under HERMES_HOME/logs/.
@@ -172,7 +288,7 @@ pub fn init_logging() -> Option<WorkerGuard> {
     if let Err(err) = std::fs::create_dir_all(&dir) {
         // No log dir → log to stderr only. Don't panic; the installer
         // should still be usable on an exotic filesystem.
-        eprintln!("[hermes-setup] could not create log dir {dir:?}: {err}");
+        eprintln!("[matlens-setup] could not create log dir {dir:?}: {err}");
         return None;
     }
 

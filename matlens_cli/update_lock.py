@@ -66,12 +66,22 @@ UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 
 MARKER_NAME = ".matlens-update-in-progress"
 
+#: Pre-rename name of the marker. Still *read*: a staged updater that predates
+#: the rename claims the legacy name, and a ``matlens update`` child must
+#: recognise its parent's claim instead of refusing its own lock.
+LEGACY_MARKER_NAME = ".hermes-update-in-progress"
+
 # Set by an orchestrating updater (the Tauri `matlens-setup --update` flow) to
 # its own pid before spawning `matlens update` as a child stage. The parent
 # holds the marker for its whole run, so without this the child refuses its
 # own parent's lock and the GUI update can never complete. See update_child_env
 # in apps/bootstrap-installer/src-tauri/src/update.rs — keep the name in sync.
 HANDOFF_PID_ENV = "MATLENS_UPDATE_HANDOFF_PID"
+
+#: Pre-rename spelling of :data:`HANDOFF_PID_ENV`, still read for the same
+#: reason — a staged updater that predates the rename exports only the old
+#: name, and the child must still recognise it as its parent.
+LEGACY_HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"
 
 # Exit code meaning "another updater/instance owns this install right now".
 # Already the de-facto contract: the Windows shim + venv-holder guards in
@@ -93,6 +103,17 @@ def update_marker_path() -> Path:
     from matlens_constants import get_process_matlens_home
 
     return get_process_matlens_home() / MARKER_NAME
+
+
+def legacy_update_marker_path() -> Path:
+    """Path of the pre-rename update marker.
+
+    Read-only: a staged updater that predates the rename claims this name, and
+    ignoring it would let a second updater mutate the same checkout.
+    """
+    from matlens_constants import get_process_matlens_home
+
+    return get_process_matlens_home() / LEGACY_MARKER_NAME
 
 
 def _pid_alive(pid: int) -> bool:
@@ -124,17 +145,23 @@ def _pid_alive(pid: int) -> bool:
 def _handoff_pid() -> int | None:
     """Pid of the orchestrating updater that spawned us, if any.
 
-    Read from :data:`HANDOFF_PID_ENV`. Malformed values count as absent —
-    a broken handoff must fall back to the normal refusal, never crash.
+    Read from :data:`HANDOFF_PID_ENV`, falling back to its pre-rename
+    spelling :data:`LEGACY_HANDOFF_PID_ENV` — a staged updater that predates
+    the rename exports only the old name, and the child must still recognise
+    it as its parent. Malformed values count as absent — a broken handoff must
+    fall back to the normal refusal, never crash.
     """
-    raw = os.environ.get(HANDOFF_PID_ENV, "").strip()
-    if not raw:
-        return None
-    try:
-        pid = int(raw)
-    except ValueError:
-        return None
-    return pid if pid > 0 else None
+    for env_name in (HANDOFF_PID_ENV, LEGACY_HANDOFF_PID_ENV):
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            pid = int(raw)
+        except ValueError:
+            continue
+        if pid > 0:
+            return pid
+    return None
 
 
 def _is_ancestor_pid(pid: int) -> bool:
@@ -175,8 +202,26 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     unreadable, malformed, dead-pid, and past-the-ceiling all mean "no live
     update", and a stale marker file is deleted so it can't strand future runs.
     Never raises.
+
+    With no explicit ``path`` both the canonical marker and its pre-rename
+    sibling are consulted, canonical first: a staged updater that predates the
+    rename claims the legacy name, and ignoring it would let a second updater
+    mutate the same checkout.
     """
-    marker = path or update_marker_path()
+    candidates = (
+        [path] if path is not None else [update_marker_path(), legacy_update_marker_path()]
+    )
+
+    for marker in candidates:
+        holder = _read_live_update_at(marker)
+        if holder is not None:
+            return holder
+
+    return None
+
+
+def _read_live_update_at(marker: Path) -> UpdateHolder | None:
+    """Interpret one marker file. See :func:`read_live_update`."""
     try:
         raw = marker.read_text(encoding="utf-8")
     except OSError:
@@ -229,6 +274,9 @@ class UpdateLock:
 
     def __init__(self, *, path: Path | None = None) -> None:
         self.path = path or update_marker_path()
+        # Kept separately: an explicit path means "look at exactly this file",
+        # while the default lookup has to consult the legacy sibling too.
+        self._lookup_path = path
         self.acquired = False
         self.holder: UpdateHolder | None = None
 
@@ -242,7 +290,7 @@ class UpdateLock:
         the parent's marker untouched. The ancestry path exists because staged
         updaters older than the HANDOFF_PID_ENV export never send the env var.
         """
-        existing = read_live_update(path=self.path)
+        existing = read_live_update(path=self._lookup_path)
         if existing is not None:
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True

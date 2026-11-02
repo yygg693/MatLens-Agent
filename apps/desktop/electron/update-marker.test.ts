@@ -21,6 +21,7 @@ import { test } from 'vitest'
 
 import {
   isPidAlive,
+  legacyMarkerPath,
   markerPath,
   readLiveUpdateMarker,
   UPDATE_MARKER_MAX_AGE_MS,
@@ -36,6 +37,10 @@ function tmpHome(tag) {
 
 function writeMarker(home, pid, startedAtSec) {
   fs.writeFileSync(markerPath(home), `${pid}\n${startedAtSec}`)
+}
+
+function writeLegacyMarker(home, pid, startedAtSec) {
+  fs.writeFileSync(legacyMarkerPath(home), `${pid}\n${startedAtSec}`)
 }
 
 const ALIVE: typeof process.kill = () => true // injected kill that "succeeds" => pid alive
@@ -176,4 +181,63 @@ test('minutes-scale elapsed time is formatted as "Nm Ss"', () => {
   const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => now })
   assert.ok(conflict)
   assert.match(conflict.message, /2m 5s/)
+})
+
+// ---------------------------------------------------------------------------
+// Legacy marker name (pre-rename installer / desktop)
+// ---------------------------------------------------------------------------
+
+test('a legacy-named marker is still read as a live update', () => {
+  // An update started by a pre-rename installer writes
+  // `.hermes-update-in-progress`. Ignoring it would let the desktop spawn a
+  // backend straight into the venv-lock race the marker exists to prevent.
+  const home = tmpHome('legacy-live')
+  const now = 1_000_000_000_000
+  writeLegacyMarker(home, 4242, Math.floor(now / 1000) - 5)
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+  assert.ok(res, 'a legacy-named fresh, alive marker is a live update')
+  assert.equal(res.pid, 4242)
+})
+
+test('a legacy-named marker blocks a hand-off', () => {
+  const home = tmpHome('legacy-conflict')
+  const now = 1_000_000_000_000
+  writeLegacyMarker(home, 1010, Math.floor(now / 1000) - 6)
+  const conflict = updateHandoffConflict(home, { kill: ALIVE, now: () => now })
+  assert.ok(conflict, 'a live legacy-named updater must block a new hand-off')
+  assert.equal(conflict.pid, 1010)
+})
+
+test('the canonical marker wins when both names are present', () => {
+  const home = tmpHome('both')
+  const now = 1_000_000_000_000
+  writeMarker(home, 1111, Math.floor(now / 1000) - 5)
+  writeLegacyMarker(home, 2222, Math.floor(now / 1000) - 5)
+  const res = readLiveUpdateMarker(home, { kill: ALIVE, now: () => now })
+  assert.ok(res)
+  assert.equal(res.pid, 1111, 'the canonical marker is the one we own')
+})
+
+test('a stale canonical marker is pruned and the legacy one is consulted', () => {
+  const home = tmpHome('stale-then-legacy')
+  const now = 1_000_000_000_000
+  writeMarker(home, 999999, Math.floor(now / 1000) - 30)
+  writeLegacyMarker(home, 3333, Math.floor(now / 1000) - 5)
+
+  // 999999 is dead; 3333 is alive.
+  const kill: typeof process.kill = pid => {
+    if (pid === 3333) {
+      return true
+    }
+
+    const err = new Error('no such process')
+
+    ;(err as any).code = 'ESRCH'
+    throw err
+  }
+
+  const res = readLiveUpdateMarker(home, { kill, now: () => now })
+  assert.ok(res, 'the legacy marker still gates the launch')
+  assert.equal(res.pid, 3333)
+  assert.equal(fs.existsSync(markerPath(home)), false, 'the stale canonical marker is pruned')
 })

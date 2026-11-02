@@ -67,10 +67,10 @@ npm run dev          # Vite renderer + Electron, which boots the Python backend
 Point the app at a specific source checkout, or sandbox it away from your real config:
 
 ```bash
-# throwaway HERMES_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
+# throwaway MATLENS_HOME, separate Electron userData, distinct app name to avoid the single-instance lock
 ../scripts/dev-sandbox.sh npm run dev
 MATLENS_DESKTOP_MATLENS_ROOT=/path/to/clone npm run dev
-HERMES_HOME=/tmp/throwaway npm run dev
+MATLENS_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
@@ -88,9 +88,13 @@ Installers are built and uploaded to GitHub Releases manually. macOS/Windows sig
 ### How it works
 
 The packaged app ships the Electron shell and a native React chat surface. On
-first launch it can install the Hermes Agent runtime into `HERMES_HOME`
-(`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows), using the same layout as a
+first launch it can install the MatLens Agent runtime into `MATLENS_HOME`
+(`~/.matlens`, or `%LOCALAPPDATA%\matlens` on Windows), using the same layout as a
 CLI install.
+
+`MATLENS_HOME` is the canonical name. The legacy `HERMES_HOME` (and the legacy
+`~/.hermes` / `%LOCALAPPDATA%\hermes` trees) is still honoured when it exists,
+so an install made before the rename keeps working without a migration step.
 
 The app has three boundaries:
 
@@ -175,15 +179,15 @@ release-path changes.
 
 ### Troubleshooting
 
-Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.
+Boot logs land in `MATLENS_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.
 
 **macOS / Linux:**
 
 ```bash
 # Force a clean first-launch setup
-rm "$HOME/.hermes/hermes-agent/.hermes-bootstrap-complete"
+rm "$HOME/.matlens/matlens-agent/.matlens-bootstrap-complete"
 # Rebuild a broken Python venv
-rm -rf "$HOME/.hermes/hermes-agent/venv"
+rm -rf "$HOME/.matlens/matlens-agent/venv"
 # Reset a stuck macOS microphone prompt (macOS only)
 tccutil reset Microphone com.nousresearch.hermes
 ```
@@ -192,12 +196,16 @@ tccutil reset Microphone com.nousresearch.hermes
 
 ```powershell
 # Force a clean first-launch setup
-Remove-Item "$env:LOCALAPPDATA\hermes\hermes-agent\.hermes-bootstrap-complete"
+Remove-Item "$env:LOCALAPPDATA\matlens\matlens-agent\.matlens-bootstrap-complete"
 # Rebuild a broken Python venv
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes\hermes-agent\venv"
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\matlens\matlens-agent\venv"
 ```
 
-> The default Hermes home on Windows is `%LOCALAPPDATA%\hermes`. Set the `HERMES_HOME` env var if you've relocated it.
+> Pre-rename installs live under `~/.hermes` / `%LOCALAPPDATA%\hermes` with a
+> `hermes-agent` directory and a `.hermes-bootstrap-complete` marker — run the
+> commands above against those paths instead.
+
+> The default MatLens home on Windows is `%LOCALAPPDATA%\matlens`. Set the `MATLENS_HOME` env var if you've relocated it.
 
 ---
 

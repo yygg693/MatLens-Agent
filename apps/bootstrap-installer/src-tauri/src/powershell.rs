@@ -131,8 +131,9 @@ pub type CancelRx = mpsc::Receiver<()>;
 
 /// Spawns install.ps1 / install.sh with the given args and streams output.
 ///
-/// `hermes_home_override` propagates to the child as $HERMES_HOME so the
-/// install script writes to the same directory the installer is reading from.
+/// `hermes_home_override` propagates to the child as $MATLENS_HOME (and the
+/// legacy $HERMES_HOME) so the install script writes to the same directory
+/// the installer is reading from.
 pub async fn run_script(
     script_path: &Path,
     args: &[String],
@@ -151,6 +152,10 @@ pub async fn run_script(
     }
 
     if let Some(home) = hermes_home_override {
+        // Both names: install.ps1 reads $MATLENS_HOME canonically and falls
+        // back to $HERMES_HOME. Setting both keeps the script and this
+        // installer resolving the same tree.
+        cmd.env("MATLENS_HOME", home);
         cmd.env("HERMES_HOME", home);
     }
 

@@ -141,7 +141,36 @@ test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', (
   })
 
   assert.equal(resolved, staged)
+  // The canonical name is probed first and wins outright — the legacy name
+  // is not even looked at.
   assert.deepEqual(probed, [staged])
+})
+
+test('resolveStagedUpdaterBinary still finds a pre-rename staged installer', () => {
+  // A user who installed through a pre-rename installer has
+  // `hermes-setup.exe` staged. Dropping it from the lookup would silently
+  // downgrade them off the hand-off path.
+  const home = 'C:\\Users\\matlens\\AppData\\Local\\matlens'
+  const legacy = path.join(home, 'hermes-setup.exe')
+
+  const resolved = resolveStagedUpdaterBinary(home, {
+    fileExists: candidate => candidate === legacy,
+    isWindows: true
+  })
+
+  assert.equal(resolved, legacy)
+})
+
+test('resolveStagedUpdaterBinary prefers the canonical staged installer', () => {
+  const home = 'C:\\Users\\matlens\\AppData\\Local\\matlens'
+  const canonical = path.join(home, 'matlens-setup.exe')
+
+  const resolved = resolveStagedUpdaterBinary(home, {
+    fileExists: () => true,
+    isWindows: true
+  })
+
+  assert.equal(resolved, canonical)
 })
 
 test('resolveStagedUpdaterBinary returns null off Windows even when matlens-setup is staged (#74836)', () => {

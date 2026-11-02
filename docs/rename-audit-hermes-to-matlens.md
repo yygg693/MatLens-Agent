@@ -432,7 +432,7 @@ title: 'Hermes'  (窗口标题, 10218 / 10318 / 11173)
 
 ## 8. 批次 0 的执行结果
 
-批次 0 已完成，落地为一次提交。核心是**修 bug**而非改名：
+批次 0 已完成，核心是**修 bug**而非改名。落地为四个提交（见 §8.5 的安装器侧对齐）：
 
 ### A2 — `MATLENS_HOME` 对齐
 
@@ -506,9 +506,92 @@ title: 'Hermes'  (窗口标题, 10218 / 10318 / 11173)
 
 ---
 
+## 8.5 安装器侧的对齐（批次 0 续）
+
+批次 0 收尾时做了一次全仓交叉核对，发现 **Tauri 版 bootstrap installer（Rust）是唯一还留在改名之前契约上的组件**。它和桌面端 / Python 端各自实现同一批名字与路径，改名只落在了其中一两个上，于是产生四组断裂：
+
+| # | 断裂 | 后果 |
+|---|---|---|
+| 1 | Python `update_lock.py` 读 `MATLENS_UPDATE_HANDOFF_PID`，Rust updater 导出的是 `HERMES_UPDATE_HANDOFF_PID` | **GUI 更新必挂** —— 子进程认不出父进程的持锁声明，把自己的父进程当成"另一个更新"，以 exit 2 拒绝。Rust 源码注释里恰好写着这个失败模式（"every GUI update refuses its parent's marker with exit 2"），但两侧变量名从未对齐 |
+| 2 | Rust 把自己暂存为 `<home>/hermes-setup.exe`，桌面端找的是 `<home>/matlens-setup.exe` | 桌面端**找不到**已暂存的安装器 → in-app update 静默退化为无法修复安装器的那条路 |
+| 3 | 桌面端写 `.matlens-update-in-progress`，Rust updater 写 `.hermes-update-in-progress` | 双方**互不承认对方的锁** —— 桌面端预写的标记挡住不了 Rust 侧，Rust 侧的锁也拦不住桌面端 |
+| 4 | `install.sh` 写 `.matlens-bootstrap-complete`，`install.ps1` 写 `.hermes-bootstrap-complete`，桌面端 `bootstrap-runner.ts` 又读 `.matlens-bootstrap-complete` | **macOS / Linux 上桌面端永远看不到 install.sh 写的标记** → 每次启动重跑整套 first-launch bootstrap |
+
+另有三处同源问题：
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 5 | Rust 的 home 默认是 `%LOCALAPPDATA%\hermes`（Windows）/ `~/.hermes`（其他），而 Python、两个安装脚本、桌面端**全都**用 `~/.matlens` | Windows 上一个机器上出现**三棵目录树**，安装器装的和桌面端找的不是同一棵 |
+| 6 | Rust 的安装根写死 `hermes-agent`，而脚本装到 `matlens-agent` | 新装用户的 updater 找不到安装根 |
+| 7 | `build.rs` 里 `include_str!("hermes-setup.manifest")`，但磁盘上的文件已改名为 `matlens-setup.manifest` | **Rust crate 根本编译不过**（`include_str!` 找不到文件） |
+| 8 | `Cargo.toml` 的 `[lib] name` 已改成 `matlens_bootstrap_lib`，但 `src/main.rs` 仍调用 `hermes_bootstrap_lib::run()` | **二进制目标也编译不过**（`E0433: cannot find module or crate`） |
+
+> 第 7、8 条是 `cargo check` 一次性揪出来的 —— 它们**不在**"grep 旧名"的范围内：文件被改名后，
+> 引用它的代码里就**不再有旧名**了，只有编译器知道找不到。改名类任务必须真的编译一次，
+> 光靠 grep 找不全。
+
+### 统一的规则
+
+沿用批次 0 已确立的同一条规则，不新造第二套：
+
+> **canonical 名写入，legacy 名只读回落。**
+
+canonical：`MATLENS_HOME` / `matlens-agent` / `matlens-setup.exe` / `.matlens-update-in-progress` / `.matlens-bootstrap-complete` / `MATLENS_UPDATE_HANDOFF_PID`
+legacy：`HERMES_HOME` / `hermes-agent` / `hermes-setup.exe` / `.hermes-update-in-progress` / `.hermes-bootstrap-complete` / `HERMES_UPDATE_HANDOFF_PID`
+
+legacy 名一律**只读**：存量安装的标记文件、安装目录、暂存安装器、握手中的 pid 变量都要继续生效，否则改名会把老用户的数据与更新通道一起废掉。
+
+### 落点
+
+| 文件 | 改动 |
+|---|---|
+| `apps/bootstrap-installer/src-tauri/src/paths.rs` | `hermes_home()` 重写为 MATLENS_HOME → HERMES_HOME → 存量 legacy 树 → `~/.matlens`；新增 `default_home_root()` / `legacy_home_roots()` / `install_root_in()` / `active_install_root()`；`installer_dest()` 改 `matlens-setup`；更新中标记与 bootstrap 标记改 canonical，并各留一个 legacy 只读入口 |
+| `apps/bootstrap-installer/src-tauri/src/update.rs` | `acquire()` 同时检查 legacy 标记；`update_child_env()` 同时导出 `MATLENS_HOME` 与 `HERMES_HOME`、同时导出新旧两个握手 pid 变量；错误文案 `Another Hermes update` → `Another MatLens update`（桌面端与 Python 端本来就是 MatLens，同一把锁两个名字） |
+| `apps/bootstrap-installer/src-tauri/src/bootstrap.rs` | 安装根改用 `install_root_in()`；`hermes_is_installed()` 改为 canonical 或 legacy 任一存在即算已安装；标记写入改 canonical |
+| `apps/bootstrap-installer/src-tauri/src/build.rs` | `include_str!` 指向 `matlens-setup.manifest`（**修掉编译阻断**） |
+| `apps/bootstrap-installer/src-tauri/src/lib.rs`、`powershell.rs` | 安装根与子进程环境变量对齐 |
+| `apps/desktop/electron/update-marker.ts` | `readLiveUpdateMarker()` 依次读 canonical 与 legacy；canonical 的陈旧标记被清理后继续看 legacy |
+| `apps/desktop/electron/updater-process.ts` | `resolveStagedUpdaterBinary()` 先找 `matlens-setup.exe`，找不到再找 `hermes-setup.exe` |
+| `apps/desktop/electron/main.ts` | bootstrap 标记写 canonical、读 canonical 优先 legacy 回落；`haveRealInstall` 同时认两个名字 |
+| `apps/desktop/electron/bootstrap-runner.ts` | 读已存在的 pin 时 canonical 优先、legacy 回落 |
+| `scripts/install.ps1` | 标记写 canonical（原先是 Windows 侧唯一写 legacy 的） |
+| `matlens_cli/update_lock.py` | 读取时同时认 canonical 与 legacy 的标记名与握手变量名 —— 否则**用户手里还留着改名前的暂存安装器时，GUI 更新照样以 exit 2 失败**（旧安装器导出旧变量名，新的 Python 端若只认新名就认不出父进程） |
+| `apps/desktop/README.md` | 环境变量与默认目录改为 `MATLENS_HOME` / `~/.matlens`，并说明 legacy 树仍被认 |
+
+### 防复发
+
+新增 `tests/ci/test_installer_path_contracts.py`（25 项），把**跨组件的名字契约**钉死：Python CLI、Electron 桌面端、Rust 安装器、两份安装脚本对同一批名字必须用同一拼写。它挡的正是上面第 1、2、3 条那类"改了一边没改另一边"的断裂 —— 这类问题在类型系统和各自的单测里都是隐形的。
+
+顺带修掉 `tests/test_install_sh_bootstrap_marker.py` 的 harness 缺陷：它把 Windows 路径未加引号地拼进 `bash -c`，反斜杠被 bash 吃掉（`D:\MatLens\scripts\install.sh` → `D:MatLensscriptsinstall.sh`），导致这 5 项在 Windows 上**从未真正跑过**。改成 POSIX 路径 + 引号后 5 项全绿 —— 正好让 install.sh 的标记契约在 Windows 上可验证。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `cargo check --all-targets`（Rust 安装器） | **0 error**（7 个 warning 全部是既有的 dead_code / GNU 目标下的 unused import，本轮净减 1） |
+| Rust 全部源文件 `rustfmt` 语法检查 | 9 个文件全部 PARSE_OK |
+| 桌面端三个 TS 工程 typecheck | 0 error |
+| ESLint（改动的 6 个 TS 文件） | 0 error，0 warning |
+| `update-marker` + `updater-process` vitest | 47 项全绿 |
+| 桌面端 electron 全量 1195 项 | 26 项失败 —— **基线复现出完全相同的 26 项、同 6 个文件**（SSH / chmod / git，Windows 环境差异），本轮引入 0 回归 |
+| `install.ps1` PowerShell AST 解析 | 无语法错误 |
+| Python：`test_update_lock` / `test_update_self_lock` | 44 → 49 项全绿（新增 5 项 legacy 兼容用例） |
+| Python：`test_install_sh_bootstrap_marker` | 5 项全绿（harness 修好后） |
+| Python：`tests/ci/test_installer_path_contracts.py` | 29 项通过（新增），2 项按文件跳过 |
+
+> **Rust 单元测试未能在本机执行**：这台机器没有 Visual Studio C++ Build Tools（无 MSVC 链接器、
+> 无 Windows SDK），`cargo check` 在 MSVC 目标下链接 build script 时即失败。改用 MinGW
+> GNU 工具链后 `cargo check --all-targets` 通过、测试二进制也成功链接，但运行时报
+> `STATUS_ENTRYPOINT_NOT_FOUND`（缺 `api-ms-win-core-winrt-error-l1-1-0.dll`，该 API set
+> 在本机 System32 不存在，MinGW 的 loader 无法解析 apiset）。因此 Rust 侧本轮只做到
+> **类型检查 + 链接**级别的验证，**用例执行留给 CI**。
+
+---
+
 ## 9. 尚未处理
 
-- **C1 打包配置**（`appId` / `productName`）—— 高风险批次
+- **C1 打包配置**（`appId` / `productName`）—— 高风险批次。Rust crate 的 `[[bin]] name = "Hermes-Setup"` 与 `tauri.conf.json` 的 `productName` / `identifier` 同属此项。
 - **D1-D5 磁盘路径迁移** —— 高风险批次，需分两个版本：先只读回落，再主动迁移
 - **E 文档网站**（`website/`）—— 单独 PR
+
 

@@ -33,6 +33,20 @@ export function markerPath(matlensHome) {
   return path.join(matlensHome, '.matlens-update-in-progress')
 }
 
+/**
+ * Legacy marker name, written by pre-rename builds of the Tauri installer and
+ * of the desktop itself.
+ *
+ * The canonical name wins, but the legacy one is still *read*: an update that
+ * was started by an older installer (a user who installed before the rename
+ * and has not re-run it since) would otherwise be invisible to the gate, and
+ * the desktop would spawn a fresh backend straight into the venv-lock race
+ * this marker exists to prevent.
+ */
+export function legacyMarkerPath(matlensHome) {
+  return path.join(matlensHome, '.hermes-update-in-progress')
+}
+
 // True only if a host process with this pid is currently alive. Signal 0 does
 // not deliver a signal — it just probes existence/permission. ESRCH => dead;
 // EPERM => alive but owned by another user (still "alive" for our purposes).
@@ -75,32 +89,39 @@ export function readLiveUpdateMarker(
     kill?: typeof process.kill
   } = {}
 ) {
-  const file = markerPath(matlensHome)
-  let raw
+  // Canonical name first, legacy second. A marker written by a pre-rename
+  // build of the installer or of the desktop itself must still gate the
+  // launch — otherwise the venv-lock race this marker prevents comes back
+  // for exactly the users who have not re-installed since the rename.
+  for (const file of [markerPath(matlensHome), legacyMarkerPath(matlensHome)]) {
+    let raw
 
-  try {
-    raw = fs.readFileSync(file, 'utf8')
-  } catch {
-    return null // absent or unreadable => no live update
-  }
-
-  const [pidLine, startedLine] = String(raw).split('\n')
-  const pid = Number.parseInt((pidLine || '').trim(), 10)
-  const startedAt = Number.parseInt((startedLine || '').trim(), 10)
-  const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
-  const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
-
-  if (!alive || ageMs > maxAgeMs) {
     try {
-      fs.unlinkSync(file)
+      raw = fs.readFileSync(file, 'utf8')
     } catch {
-      void 0
+      continue // absent or unreadable => try the next candidate
     }
 
-    return null
+    const [pidLine, startedLine] = String(raw).split('\n')
+    const pid = Number.parseInt((pidLine || '').trim(), 10)
+    const startedAt = Number.parseInt((startedLine || '').trim(), 10)
+    const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
+    const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
+
+    if (!alive || ageMs > maxAgeMs) {
+      try {
+        fs.unlinkSync(file)
+      } catch {
+        void 0
+      }
+
+      continue // stale => not a live update; keep looking
+    }
+
+    return { pid, ageMs }
   }
 
-  return { pid, ageMs }
+  return null
 }
 
 /**

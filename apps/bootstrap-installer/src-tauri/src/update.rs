@@ -123,7 +123,7 @@ struct UpdateMarkerGuard {
 
 /// Never treat a marker older than this as a live update. Mirrors
 /// UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts and
-/// UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py — all three read
+/// UPDATE_MARKER_MAX_AGE_SECONDS in matlens_cli/update_lock.py — all three read
 /// this one file, so a shorter ceiling in any of them would steal a lock the
 /// others still consider live.
 const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
@@ -211,6 +211,18 @@ impl UpdateMarkerGuard {
         if let Some(owner) = live_marker_owner(&path) {
             return Err(owner);
         }
+        // A pre-rename updater (or desktop) claims the legacy marker name.
+        // Refuse against it as well — otherwise a pre-rename updater and this
+        // one both mutate the same checkout, which is exactly the hazard the
+        // marker exists to prevent.
+        if let Some(parent) = path.parent() {
+            let legacy = parent.join(crate::paths::LEGACY_UPDATE_MARKER_NAME);
+            if legacy != path {
+                if let Some(owner) = live_marker_owner(&legacy) {
+                    return Err(owner);
+                }
+            }
+        }
         let pid = std::process::id();
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -252,8 +264,7 @@ impl Drop for UpdateMarkerGuard {
 }
 
 async fn run_update(app: AppHandle) -> Result<()> {
-    let hermes_home = crate::paths::hermes_home();
-    let install_root = hermes_home.join("hermes-agent");
+    let install_root = crate::paths::active_install_root();
 
     // Mutual exclusion (#50238): publish an "update in progress" marker for the
     // entire duration of this update. A desktop instance the user relaunches
@@ -279,7 +290,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 format!("{secs}s")
             };
             let msg = format!(
-                "Another Hermes update is already running (PID {}, started {} ago). \
+                "Another MatLens update is already running (PID {}, started {} ago). \
                  Wait for it to finish, or close the window or dashboard tab that \
                  started it, then try again.",
                 owner.pid, elapsed
@@ -898,9 +909,15 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     let hermes_home = crate::paths::hermes_home();
     let mut envs = vec![(
-        "HERMES_HOME".to_string(),
+        "MATLENS_HOME".to_string(),
         hermes_home.as_os_str().to_os_string(),
     )];
+    // The legacy name alongside it: a `matlens update` child that predates
+    // the rename still reads $HERMES_HOME for the home root.
+    envs.push((
+        "HERMES_HOME".to_string(),
+        hermes_home.as_os_str().to_os_string(),
+    ));
     // `hermes update` is a Python CLI writing to a pipe here, so CPython
     // block-buffers its stdout: nothing reaches run_streamed (and the live
     // log UI) until 8 KB accumulate or the process exits. Long quiet steps —
@@ -909,12 +926,20 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     // output instead.
     envs.push(("PYTHONUNBUFFERED".to_string(), OsString::from("1")));
     // We hold the update-in-progress marker for this whole run, and the
-    // `hermes update` child claims that SAME lock (hermes_cli/update_lock.py).
-    // Name our pid so the child recognizes the live holder as its own
-    // orchestrator and runs under our claim — without this every GUI update
-    // refuses its parent's marker with exit 2 ("Hermes is still running")
-    // and no number of retries can ever succeed. Keep the variable name in
-    // sync with HANDOFF_PID_ENV in hermes_cli/update_lock.py.
+    // `matlens update` child claims that SAME lock (matlens_cli/
+    // update_lock.py). Name our pid so the child recognizes the live holder
+    // as its own orchestrator and runs under our claim — without this every
+    // GUI update refuses its parent's marker with exit 2 ("MatLens is still
+    // running") and no number of retries can ever succeed.
+    //
+    // The canonical name is MATLENS_UPDATE_HANDOFF_PID (what
+    // HANDOFF_PID_ENV in matlens_cli/update_lock.py reads); the legacy name is
+    // exported alongside it for a `matlens update` child that predates the
+    // rename. Keep both in sync with HANDOFF_PID_ENV.
+    envs.push((
+        "MATLENS_UPDATE_HANDOFF_PID".to_string(),
+        OsString::from(std::process::id().to_string()),
+    ));
     envs.push((
         "HERMES_UPDATE_HANDOFF_PID".to_string(),
         OsString::from(std::process::id().to_string()),
@@ -1221,7 +1246,7 @@ mod tests {
 
     #[test]
     fn venv_hermes_is_under_install_root() {
-        let root = Path::new("/x/hermes-agent");
+        let root = Path::new("/x/matlens-agent");
         let shim = venv_hermes(root);
         assert!(shim.starts_with(root));
         assert!(shim.to_string_lossy().contains("venv"));
@@ -1234,7 +1259,7 @@ mod tests {
 
     #[test]
     fn update_child_env_forces_unbuffered_python() {
-        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        let envs = update_child_env(Path::new("/x/matlens-agent"));
         assert!(
             envs.iter()
                 .any(|(k, v)| k == "PYTHONUNBUFFERED" && v.to_str() == Some("1")),
@@ -1244,18 +1269,38 @@ mod tests {
 
     #[test]
     fn update_child_env_names_our_pid_for_the_lock_handoff() {
-        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        let envs = update_child_env(Path::new("/x/matlens-agent"));
+        let our_pid = std::process::id().to_string();
         assert!(
-            envs.iter().any(|(k, v)| k == "HERMES_UPDATE_HANDOFF_PID"
-                && v.to_str() == Some(std::process::id().to_string().as_str())),
-            "the hermes update child claims the same marker we hold; without our pid \
+            envs.iter()
+                .any(|(k, v)| k == "MATLENS_UPDATE_HANDOFF_PID" && v.to_str() == Some(our_pid.as_str())),
+            "the matlens update child claims the same marker we hold; without our pid \
              it refuses its own parent's lock and every GUI update dead-ends on exit 2"
+        );
+        assert!(
+            envs.iter()
+                .any(|(k, v)| k == "HERMES_UPDATE_HANDOFF_PID" && v.to_str() == Some(our_pid.as_str())),
+            "a pre-rename matlens update child must still recognise our claim"
+        );
+    }
+
+    #[test]
+    fn update_child_env_pins_both_home_names() {
+        let envs = update_child_env(Path::new("/x/matlens-agent"));
+        let homes: Vec<&str> = envs
+            .iter()
+            .filter(|(k, _)| k == "MATLENS_HOME" || k == "HERMES_HOME")
+            .map(|(_, v)| v.to_str().unwrap_or_default())
+            .collect();
+        assert!(
+            homes.len() == 2 && homes[0] == homes[1],
+            "the child must resolve the SAME home under both names, got {homes:?}"
         );
     }
 
     #[test]
     fn lock_probe_paths_include_desktop_app_payload() {
-        let root = Path::new("/x/hermes-agent");
+        let root = Path::new("/x/matlens-agent");
         let probes = install_lock_probe_paths(root);
 
         assert!(
@@ -1275,7 +1320,7 @@ mod tests {
 
     #[test]
     fn locked_paths_ignores_missing_payloads() {
-        let root = Path::new("/nonexistent/hermes-agent");
+        let root = Path::new("/nonexistent/matlens-agent");
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
@@ -1285,7 +1330,7 @@ mod tests {
     fn update_marker_guard_writes_then_removes_on_drop() {
         let dir = unique_tmp_dir("marker-guard");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         {
             let _g = UpdateMarkerGuard::acquire(marker.clone())
@@ -1312,7 +1357,7 @@ mod tests {
     fn update_marker_guard_drop_is_quiet_when_already_gone() {
         let dir = unique_tmp_dir("marker-guard-gone");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
@@ -1354,7 +1399,7 @@ mod tests {
     fn acquire_refuses_while_a_live_updater_owns_the_marker() {
         let dir = unique_tmp_dir("marker-contended");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         // A live *foreign* updater holds it. We must NOT clobber the marker and
         // run concurrently over the same checkout — that race is what let a
@@ -1388,7 +1433,7 @@ mod tests {
         // every in-app desktop update loop forever. Adopt and rewrite.
         let dir = unique_tmp_dir("marker-own-pid");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1422,7 +1467,7 @@ mod tests {
     fn acquire_reclaims_a_marker_owned_by_a_dead_pid() {
         let dir = unique_tmp_dir("marker-dead-pid");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         // pid 1 exists everywhere, so fabricate a dead one: a very large pid
         // that no live process owns. A crashed updater must never wedge every
@@ -1449,7 +1494,7 @@ mod tests {
     fn acquire_reclaims_a_marker_past_the_age_ceiling() {
         let dir = unique_tmp_dir("marker-stale-age");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         // Our own (live) pid, but started well past the ceiling: a wedged
         // updater must not hold the lock forever.
@@ -1470,7 +1515,7 @@ mod tests {
     fn completed_update_releases_marker_before_guard_drop() {
         let dir = unique_tmp_dir("marker-complete");
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join(".hermes-update-in-progress");
+        let marker = dir.join(".matlens-update-in-progress");
 
         let guard = UpdateMarkerGuard::acquire(marker.clone())
             .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));

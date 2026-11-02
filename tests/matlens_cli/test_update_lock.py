@@ -23,9 +23,12 @@ import pytest
 
 from matlens_cli.update_lock import (
     HANDOFF_PID_ENV,
+    LEGACY_HANDOFF_PID_ENV,
+    LEGACY_MARKER_NAME,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
     describe_holder,
+    legacy_update_marker_path,
     read_live_update,
     update_marker_path,
 )
@@ -262,3 +265,72 @@ class TestAncestryHandoff:
         assert lock.acquire() is False
         assert lock.holder is not None
         assert lock.holder.pid == DEAD_PID
+
+
+class TestPreRenameCompatibility:
+    """The marker and the hand-off variable both had a pre-rename spelling.
+
+    The staged ``matlens-setup`` binary is only refreshed by a full installer
+    run, so a user can easily drive a NEW checkout with an OLD staged updater.
+    That old updater claims ``.hermes-update-in-progress`` and exports
+    ``HERMES_UPDATE_HANDOFF_PID`` — so both names must still be honoured, or
+    the child refuses its own parent's lock and the GUI update dead-ends on
+    exit 2 exactly as it did before the rename.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _liveness_pinned_true(self, monkeypatch):
+        monkeypatch.setattr("matlens_cli.update_lock._pid_alive", lambda pid: True)
+
+    def test_legacy_marker_path_follows_process_matlens_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MATLENS_HOME", str(tmp_path))
+        assert legacy_update_marker_path() == tmp_path / LEGACY_MARKER_NAME
+
+    def test_legacy_named_marker_blocks_a_second_updater(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MATLENS_HOME", str(tmp_path))
+        legacy = tmp_path / LEGACY_MARKER_NAME
+        legacy.write_text(f"{DEAD_PID}\n{int(time.time())}\n", encoding="utf-8")
+
+        holder = read_live_update()
+        assert holder is not None, "a pre-rename marker must still hold the lock"
+        assert holder.pid == DEAD_PID
+
+    def test_canonical_marker_wins_over_the_legacy_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MATLENS_HOME", str(tmp_path))
+        (tmp_path / ".matlens-update-in-progress").write_text(
+            f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8"
+        )
+        (tmp_path / LEGACY_MARKER_NAME).write_text(
+            f"{DEAD_PID}\n{int(time.time())}\n", encoding="utf-8"
+        )
+
+        holder = read_live_update()
+        assert holder is not None
+        assert holder.pid == os.getpid()
+
+    def test_legacy_handoff_env_var_grants_the_parents_claim(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MATLENS_HOME", str(tmp_path))
+        monkeypatch.delenv(HANDOFF_PID_ENV, raising=False)
+        monkeypatch.setenv(LEGACY_HANDOFF_PID_ENV, str(os.getpid()))
+        (tmp_path / LEGACY_MARKER_NAME).write_text(
+            f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8"
+        )
+
+        lock = UpdateLock()
+        assert lock.acquire() is True, "a pre-rename parent's claim is ours to run under"
+        assert lock.acquired is False, "the parent's claim is not ours to own"
+
+        lock.release()
+        assert (tmp_path / LEGACY_MARKER_NAME).exists(), "the parent still needs its marker"
+
+    def test_canonical_handoff_env_var_wins_over_the_legacy_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MATLENS_HOME", str(tmp_path))
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid()))
+        monkeypatch.setenv(LEGACY_HANDOFF_PID_ENV, str(DEAD_PID))
+        (tmp_path / LEGACY_MARKER_NAME).write_text(
+            f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8"
+        )
+
+        lock = UpdateLock()
+        assert lock.acquire() is True
+        assert lock.acquired is False

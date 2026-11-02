@@ -1,0 +1,328 @@
+"""Guards the on-disk contracts shared by the installer, the desktop and the CLI.
+
+The Hermes → MatLens rename touched four independent implementations of the
+same few names — the Python CLI, the Electron desktop, the Tauri bootstrap
+installer and the POSIX/PowerShell install scripts.  They only agree by
+convention, and nothing in the type system or the test suite enforces it: a
+rename applied to one side and not the other produces code that compiles,
+passes its own unit tests, and then fails at runtime.
+
+The break this file exists to prevent, found during the batch-0 rename audit:
+
+* ``matlens_cli/update_lock.py`` reads the hand-off pid from
+  ``MATLENS_UPDATE_HANDOFF_PID``; the Rust installer exported
+  ``HERMES_UPDATE_HANDOFF_PID``.  The child never saw its parent's claim, so
+  every GUI update refused its own parent's lock and dead-ended on exit 2 —
+  with no error pointing at the rename.
+* The Rust installer staged itself as ``hermes-setup.exe`` while the desktop
+  looked for ``matlens-setup.exe``, so the in-app update hand-off silently
+  degraded.
+* ``scripts/install.sh`` stamped ``.matlens-bootstrap-complete`` while
+  ``scripts/install.ps1`` stamped ``.hermes-bootstrap-complete`` and the
+  desktop read a third name — so on macOS/Linux the desktop never saw the
+  marker's own install and re-ran the whole first-launch bootstrap on every
+  launch.
+
+Each check below pins one name to the single canonical spelling, and (where a
+legacy spelling must keep working) pins the fallback rule instead.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+# tests/ci/ -> tests/ -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+RUST_SRC = REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "src"
+DESKTOP_ELECTRON = REPO_ROOT / "apps" / "desktop" / "electron"
+
+# --- the canonical names ---------------------------------------------------
+
+#: The update-in-progress marker, shared by the Python CLI, the Electron
+#: desktop and the Rust installer.
+CANONICAL_UPDATE_MARKER = ".matlens-update-in-progress"
+
+#: The pre-rename spelling, still honoured on read.
+LEGACY_UPDATE_MARKER = ".hermes-update-in-progress"
+
+#: The bootstrap-complete marker, shared by both install scripts, the Rust
+#: installer and the Electron desktop.
+CANONICAL_BOOTSTRAP_MARKER = ".matlens-bootstrap-complete"
+
+#: The pre-rename spelling, still honoured on read.
+LEGACY_BOOTSTRAP_MARKER = ".hermes-bootstrap-complete"
+
+#: The environment variable the Rust updater exports so the Python
+#: ``matlens update`` child recognises the live holder as its own parent.
+CANONICAL_HANDOFF_PID_ENV = "MATLENS_UPDATE_HANDOFF_PID"
+
+#: The staged installer binary the desktop hands updates to.
+CANONICAL_STAGED_INSTALLER = "matlens-setup.exe"
+
+
+def _read(path: Path) -> str:
+    assert path.is_file(), f"expected file to exist: {path}"
+    return path.read_text(encoding="utf-8")
+
+
+def _rust(name: str) -> str:
+    return _read(RUST_SRC / name)
+
+
+def _desktop(name: str) -> str:
+    return _read(DESKTOP_ELECTRON / name)
+
+
+class TestUpdateMarkerName:
+    """The three implementations must name the update marker identically."""
+
+    def test_python_cli_uses_the_canonical_marker_name(self) -> None:
+        source = _read(REPO_ROOT / "matlens_cli" / "update_lock.py")
+        assert f'MARKER_NAME = "{CANONICAL_UPDATE_MARKER}"' in source
+
+    def test_desktop_uses_the_canonical_marker_name(self) -> None:
+        source = _desktop("update-marker.ts")
+        assert f"'{CANONICAL_UPDATE_MARKER}'" in source
+
+    def test_rust_installer_uses_the_canonical_marker_name(self) -> None:
+        source = _rust("paths.rs")
+        assert f'"{CANONICAL_UPDATE_MARKER}"' in source
+
+    def test_legacy_marker_is_still_read_by_the_desktop(self) -> None:
+        # A pre-rename installer still writes the legacy name; ignoring it
+        # would let the desktop spawn a backend mid-update.
+        source = _desktop("update-marker.ts")
+        assert f"'{LEGACY_UPDATE_MARKER}'" in source
+
+    def test_legacy_marker_is_still_read_by_the_rust_installer(self) -> None:
+        # The legacy name lives in paths.rs as the single shared constant the
+        # updater's guard consults.
+        source = _rust("paths.rs")
+        assert f'LEGACY_UPDATE_MARKER_NAME: &str = "{LEGACY_UPDATE_MARKER}"' in source
+        assert "LEGACY_UPDATE_MARKER_NAME" in _rust("update.rs")
+
+
+class TestHandoffPidEnv:
+    """The Rust updater must export the variable the Python child reads.
+
+    This is the contract that silently broke the in-app update: the two sides
+    used different spellings, so the child never recognised its parent and
+    refused the lock with exit 2.
+    """
+
+    def test_python_cli_declares_the_canonical_env_name(self) -> None:
+        source = _read(REPO_ROOT / "matlens_cli" / "update_lock.py")
+        assert f'HANDOFF_PID_ENV = "{CANONICAL_HANDOFF_PID_ENV}"' in source
+
+    def test_rust_exports_the_same_env_name_the_python_reads(self) -> None:
+        source = _rust("update.rs")
+        assert f'"{CANONICAL_HANDOFF_PID_ENV}"' in source
+
+    def test_rust_also_exports_the_legacy_name(self) -> None:
+        # A `matlens update` child that predates the rename still reads the
+        # legacy spelling, so both are exported.
+        source = _rust("update.rs")
+        assert '"HERMES_UPDATE_HANDOFF_PID"' in source
+
+
+class TestBootstrapMarkerName:
+    """Both install scripts, the Rust installer and the desktop must agree."""
+
+    def test_install_sh_stamps_the_canonical_marker(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.sh")
+        assert CANONICAL_BOOTSTRAP_MARKER in source
+        # The legacy spelling must not be the one we publish any more.
+        publish_lines = [
+            line
+            for line in source.splitlines()
+            if "bootstrap-complete" in line and "marker_path" in line
+        ]
+        assert publish_lines, "install.sh must publish a bootstrap marker"
+        assert all(CANONICAL_BOOTSTRAP_MARKER in line for line in publish_lines)
+
+    def test_install_ps1_stamps_the_canonical_marker(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert f'"{CANONICAL_BOOTSTRAP_MARKER}"' in source
+
+    def test_rust_installer_stamps_the_canonical_marker(self) -> None:
+        source = _rust("paths.rs")
+        assert f'"{CANONICAL_BOOTSTRAP_MARKER}"' in source
+
+    def test_desktop_reads_the_canonical_marker(self) -> None:
+        source = _desktop("main.ts")
+        assert f"'{CANONICAL_BOOTSTRAP_MARKER}'" in source
+
+    def test_desktop_still_reads_the_legacy_marker(self) -> None:
+        # A tree installed before the rename carries only the legacy file;
+        # treating it as "never bootstrapped" re-runs the whole first-launch
+        # flow on every launch.
+        source = _desktop("main.ts")
+        assert f"'{LEGACY_BOOTSTRAP_MARKER}'" in source
+
+
+class TestStagedInstallerName:
+    """The installer stages itself under the name the desktop looks for."""
+
+    def test_rust_stages_the_canonical_binary_name(self) -> None:
+        source = _rust("paths.rs")
+        assert f'"{CANONICAL_STAGED_INSTALLER}"' in source
+
+    def test_desktop_looks_for_the_canonical_binary_name(self) -> None:
+        source = _desktop("updater-process.ts")
+        assert f"'{CANONICAL_STAGED_INSTALLER}'" in source
+
+    def test_desktop_still_finds_the_pre_rename_binary(self) -> None:
+        source = _desktop("updater-process.ts")
+        assert "'hermes-setup.exe'" in source
+
+
+class TestLegacyCompatibility:
+    """The legacy spellings must stay READABLE everywhere.
+
+    A staged installer binary is only refreshed by a full installer run, so a
+    user can easily drive a NEW checkout with an OLD staged updater. That old
+    updater claims the legacy marker and exports the legacy hand-off variable
+    — if nobody reads them any more, the child refuses its own parent's lock
+    and the GUI update dead-ends on exit 2, exactly as it did before the
+    rename.
+    """
+
+    def test_python_reads_the_legacy_marker_name(self) -> None:
+        source = _read(REPO_ROOT / "matlens_cli" / "update_lock.py")
+        assert f'LEGACY_MARKER_NAME = "{LEGACY_UPDATE_MARKER}"' in source
+
+    def test_python_reads_the_legacy_handoff_env_name(self) -> None:
+        source = _read(REPO_ROOT / "matlens_cli" / "update_lock.py")
+        assert f'LEGACY_HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"' in source
+
+    def test_rust_reads_the_legacy_marker_name(self) -> None:
+        source = _rust("update.rs")
+        assert "LEGACY_UPDATE_MARKER_NAME" in source
+
+    def test_desktop_reads_the_legacy_marker_name(self) -> None:
+        source = _desktop("update-marker.ts")
+        assert f"'{LEGACY_UPDATE_MARKER}'" in source
+
+
+class TestRustBuildIntegrity:
+    """Rename damage that breaks the crate build itself.
+
+    Both of these were found by ``cargo check``: the manifest file was renamed
+    but ``include_str!`` still pointed at the old name, and the lib target was
+    renamed while ``main.rs`` still called the old one. Neither shows up in a
+    grep for "hermes" — the build simply fails.
+    """
+
+    def test_build_script_includes_the_manifest_that_exists(self) -> None:
+        build_rs = _read(RUST_SRC.parent / "build.rs")
+        included = re.findall(r'include_str!\("([^"]+)"\)', build_rs)
+        assert included, "build.rs must include the windows manifest"
+        for name in included:
+            assert (RUST_SRC.parent / name).is_file(), (
+                f"build.rs includes {name!r}, which does not exist — the crate "
+                f"cannot build"
+            )
+
+    def test_main_calls_the_library_target_cargo_declares(self) -> None:
+        cargo_toml = _read(RUST_SRC.parent / "Cargo.toml")
+        declared = re.search(r'^\[lib\]\s*\nname\s*=\s*"([^"]+)"', cargo_toml, re.MULTILINE)
+        assert declared, "Cargo.toml must declare a [lib] target"
+        lib_name = declared.group(1)
+
+        main_rs = _read(RUST_SRC / "main.rs")
+        assert f"{lib_name}::run()" in main_rs, (
+            f"main.rs must call the declared lib target {lib_name!r}"
+        )
+
+
+class TestHomeRootAgreement:
+    """The installer and the desktop must resolve the SAME home root.
+
+    The Rust installer used to default to ``%LOCALAPPDATA%\\hermes`` on
+    Windows while the Python CLI, both install scripts and the desktop all
+    used ``~/.matlens`` — three trees on one machine.
+    """
+
+    def test_rust_reads_the_canonical_home_env_first(self) -> None:
+        source = _rust("paths.rs")
+        canonical_at = source.find('std::env::var("MATLENS_HOME")')
+        legacy_at = source.find('std::env::var("HERMES_HOME")')
+        assert canonical_at != -1, "the Rust installer must read $MATLENS_HOME"
+        assert legacy_at != -1, "the Rust installer must still read $HERMES_HOME"
+        assert canonical_at < legacy_at, "the canonical name must win"
+
+    def test_rust_default_home_root_is_dot_matlens(self) -> None:
+        source = _rust("paths.rs")
+        assert 'home.join(".matlens")' in source
+        # The Windows-only %LOCALAPPDATA% default is gone: it pointed at a
+        # tree no other component reads.
+        assert 'data_local_dir()' in source  # legacy candidate only
+        assert 'local_app_data.join("hermes")' in source
+
+    def test_python_cli_default_home_is_dot_matlens(self) -> None:
+        source = _read(REPO_ROOT / "matlens_constants.py")
+        assert 'Path.home() / ".matlens"' in source
+
+    def test_install_scripts_use_the_canonical_home_default(self) -> None:
+        sh = _read(REPO_ROOT / "scripts" / "install.sh")
+        assert '$HOME/.matlens' in sh
+        ps1 = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "$env:USERPROFILE\\.matlens" in ps1
+
+
+class TestInstallRootAgreement:
+    """``matlens-agent`` for a fresh install, ``hermes-agent`` for a legacy one."""
+
+    def test_rust_prefers_the_canonical_install_dir(self) -> None:
+        source = _rust("paths.rs")
+        assert 'home.join("matlens-agent")' in source
+        assert 'home.join("hermes-agent")' in source
+        canonical_at = source.find('home.join("matlens-agent")')
+        legacy_at = source.find('home.join("hermes-agent")')
+        assert canonical_at < legacy_at, "the canonical install dir must be preferred"
+
+    def test_install_scripts_use_the_canonical_install_dir(self) -> None:
+        sh = _read(REPO_ROOT / "scripts" / "install.sh")
+        assert "$MATLENS_HOME/matlens-agent" in sh
+        ps1 = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "\\matlens-agent" in ps1
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "apps/bootstrap-installer/src-tauri/src/paths.rs",
+        "apps/bootstrap-installer/src-tauri/src/update.rs",
+        "apps/bootstrap-installer/src-tauri/src/bootstrap.rs",
+    ],
+)
+def test_rust_sources_do_not_hardcode_the_legacy_home_default(relative_path: str) -> None:
+    """``~/.hermes`` / ``%LOCALAPPDATA%\\hermes`` must not be a *default*.
+
+    They stay legal as a legacy *candidate* (an existing tree is honoured),
+    but no component may resolve to one by default — that is what put the
+    installer on a tree nothing else reads.
+    """
+    source = _read(REPO_ROOT / relative_path)
+    if "home.join(\".hermes\")" not in source:
+        pytest.skip("no legacy home candidate in this file")
+
+    # The legacy join must live inside the legacy-candidate helper, never in
+    # the function that computes the default root.
+    legacy_fn = source.find("fn legacy_home_roots()")
+    default_fn = source.find("fn default_home_root()")
+    assert legacy_fn != -1, "a legacy candidate must live in legacy_home_roots()"
+    assert default_fn != -1, "the default root must be computed by default_home_root()"
+
+    legacy_join = source.find('home.join(".hermes")')
+    assert legacy_join > legacy_fn, "the legacy join belongs to legacy_home_roots()"
+
+    default_block = source[default_fn:legacy_fn]
+    assert 'home.join(".matlens")' in default_block, (
+        "default_home_root() must resolve to ~/.matlens, not a legacy tree"
+    )
+    assert 'home.join(".hermes")' not in default_block

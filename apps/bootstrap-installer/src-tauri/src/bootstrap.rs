@@ -258,7 +258,7 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 /// launchable desktop app exists on disk. Used by the installer's launcher fast
 /// path so a bare re-open just opens Hermes instead of re-running setup.
 pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
-    install_root.join(".hermes-bootstrap-complete").exists()
+    crate::paths::bootstrap_marker_exists(install_root)
         && resolve_hermes_desktop_exe(install_root).is_some()
 }
 
@@ -317,7 +317,7 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
     // Atomic publish (temp sibling + flush + rename), matching Electron's
     // writeFileAtomic(). hermes_is_installed() only checks existence, so a
     // partial direct write would incorrectly enable the launcher fast path.
-    let tmp_path = install_root.join(".hermes-bootstrap-complete.tmp");
+    let tmp_path = install_root.join(".matlens-bootstrap-complete.tmp");
     {
         let mut file = std::fs::File::create(&tmp_path).with_context(|| {
             format!(
@@ -777,13 +777,14 @@ async fn run_bootstrap(
     }
 
     // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
-    // explicitly; we infer it from $HermesHome which Stage-Repository clones
-    // the repo INTO at $HermesHome\hermes-agent. Mirrors hermes_constants.
+    // explicitly; we infer it from the home root, whose install directory is
+    // `matlens-agent` for a fresh install and `hermes-agent` for a
+    // pre-rename one. Mirrors matlens_constants.
     let hermes_home = args
         .hermes_home
         .clone()
         .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
+    let install_root = crate::paths::install_root_in(Path::new(&hermes_home));
 
     // Marker publish is terminal for this run: a write failure must emit Failed
     // so the UI leaves the progress state (it does not poll get_bootstrap_status).
@@ -802,13 +803,13 @@ async fn run_bootstrap(
         }
     };
 
-    // Copy ourselves to HERMES_HOME/hermes-setup.exe so the desktop app can
+    // Copy ourselves to <home>/matlens-setup.exe so the desktop app can
     // re-invoke us with `--update` and shortcuts have a stable target. This is
     // a one-shot install concern; an `--update` re-invocation no-ops because
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
     if let Err(err) = crate::paths::copy_self_to_hermes_home() {
-        tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
+        tracing::warn!(?err, "failed to copy installer into the MatLens home root (non-fatal)");
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
@@ -1094,7 +1095,7 @@ mod tests {
 
         let marker =
             write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
-        let marker_path = root.join(".hermes-bootstrap-complete");
+        let marker_path = root.join(".matlens-bootstrap-complete");
         let from_disk: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
 
@@ -1120,8 +1121,8 @@ mod tests {
 
         write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
 
-        let marker_path = root.join(".hermes-bootstrap-complete");
-        let tmp_path = root.join(".hermes-bootstrap-complete.tmp");
+        let marker_path = root.join(".matlens-bootstrap-complete");
+        let tmp_path = root.join(".matlens-bootstrap-complete.tmp");
         assert!(
             marker_path.is_file(),
             "final marker must exist after atomic publish"
@@ -1144,11 +1145,27 @@ mod tests {
         // final marker would still enable the fast path.
         let root = unique_tmp_dir("marker-existence-only");
         make_release_tree(&root);
-        std::fs::write(root.join(".hermes-bootstrap-complete"), b"").unwrap();
+        std::fs::write(root.join(".matlens-bootstrap-complete"), b"").unwrap();
 
         assert!(
             hermes_is_installed(&root),
             "empty/partial marker content still counts as installed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hermes_is_installed_accepts_legacy_marker_name() {
+        // A tree installed before the rename carries only
+        // `.hermes-bootstrap-complete`. Treating it as "never bootstrapped"
+        // would re-run the whole first-launch bootstrap on every launch.
+        let root = unique_tmp_dir("marker-legacy");
+        make_release_tree(&root);
+        std::fs::write(root.join(".hermes-bootstrap-complete"), b"").unwrap();
+
+        assert!(
+            hermes_is_installed(&root),
+            "a pre-rename marker must still enable the installer fast path"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1173,11 +1190,11 @@ mod tests {
             "error should mention the marker path: {msg}"
         );
         assert!(
-            !not_a_dir.join(".hermes-bootstrap-complete").exists(),
+            !not_a_dir.join(".matlens-bootstrap-complete").exists(),
             "failed write must not leave a final marker that enables the fast path"
         );
         assert!(
-            !not_a_dir.join(".hermes-bootstrap-complete.tmp").exists(),
+            !not_a_dir.join(".matlens-bootstrap-complete.tmp").exists(),
             "failed write must not leave a temp marker sibling either"
         );
         let _ = std::fs::remove_dir_all(&base);

@@ -731,7 +731,15 @@ const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
 // We deliberately put the marker INSIDE ACTIVE_HERMES_ROOT (not alongside)
 // so that deleting the checkout to start fresh also deletes the marker --
 // avoids the confusing "marker exists but checkout is gone" state.
-const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
+//
+// The canonical name is `.matlens-bootstrap-complete`, matching what
+// scripts/install.sh, scripts/install.ps1 and the Rust bootstrap installer
+// write. The legacy `.hermes-bootstrap-complete` is still READ: a tree
+// installed before the rename carries only the legacy file, and treating it
+// as "never bootstrapped" would re-run the whole first-launch flow on every
+// start for exactly those users.
+const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.matlens-bootstrap-complete')
+const LEGACY_BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
@@ -1873,7 +1881,7 @@ function directoryExists(filePath) {
 }
 
 // --- in-app update mutual exclusion (#50238) -------------------------------
-// The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
+// The Tauri updater writes MATLENS_HOME/.matlens-update-in-progress for the whole
 // duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
 // relaunches the desktop mid-update — because the window vanished with no
 // progress and looks crashed — a fresh instance must NOT spawn its own local
@@ -3378,7 +3386,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     if (!updater) {
       // No staged updater binary — this is a CLI-installed user (they ran
       // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). On Windows the repo hand-off
+      // matlens-setup.exe into MATLENS_HOME). On Windows the repo hand-off
       // script serves them just as well as installer users — it only needs
       // PowerShell and the checkout — so fall through to the normal hand-off
       // when the script exists. Only when the checkout predates the script do
@@ -3715,7 +3723,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
   // and the bootstrap-complete marker are present earlier and are better signals.
   const haveRealInstall =
-    fileExists(venvPython) || fileExists(venvHermes) || fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
+    fileExists(venvPython) ||
+    fileExists(venvHermes) ||
+    fileExists(path.join(updateRoot, '.matlens-bootstrap-complete')) ||
+    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
 
   const updaterArgs = chooseUpdaterArgs(haveRealInstall, branch)
 
@@ -4026,7 +4037,8 @@ function readJson(filePath) {
 //     desktopVersion: "<app.getVersion()>"  // for forensics
 //   }
 function readBootstrapMarker() {
-  return readJson(BOOTSTRAP_COMPLETE_MARKER)
+  // Canonical first, legacy second — see BOOTSTRAP_COMPLETE_MARKER.
+  return readJson(BOOTSTRAP_COMPLETE_MARKER) ?? readJson(LEGACY_BOOTSTRAP_COMPLETE_MARKER)
 }
 
 // Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually

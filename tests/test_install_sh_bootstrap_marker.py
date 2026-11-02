@@ -26,14 +26,19 @@ def run_write_marker(install_dir, *, commit="", branch="main"):
     install.sh guards its own entrypoint behind MANIFEST_MODE/STAGE_NAME/main,
     so sourcing it with --help-less argv defines the functions without running
     an install.
+
+    The paths go into a bash script, so they are emitted in POSIX form and
+    quoted: a native Windows path (``D:\\MatLens\\scripts\\install.sh``) has
+    its backslashes eaten by bash before the command ever runs, which used to
+    make every case in this file fail on Windows.
     """
     script = f"""
 set -e
-INSTALL_DIR={install_dir!s}
+INSTALL_DIR='{install_dir.as_posix()}'
 INSTALL_COMMIT={commit!r}
 BRANCH={branch!r}
 # Pull in the function definitions without triggering an install.
-eval "$(sed -n '/^write_bootstrap_marker()/,/^}}/p' {INSTALL_SH!s})"
+eval "$(sed -n '/^write_bootstrap_marker()/,/^}}/p' '{INSTALL_SH.as_posix()}')"
 log_warn() {{ echo "WARN: $*" >&2; }}
 write_bootstrap_marker
 """

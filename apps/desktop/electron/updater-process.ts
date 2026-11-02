@@ -255,9 +255,22 @@ export function resolveStagedUpdaterBinary(
   }
 
   const fileExists = deps.fileExists ?? stagedFileExists
-  const candidate = path.join(matlensHome, 'matlens-setup.exe')
 
-  return fileExists(candidate) ? candidate : null
+  // Canonical name first, legacy second. A user who installed through a
+  // pre-rename installer still has `hermes-setup.exe` staged — dropping it
+  // from the lookup would silently downgrade them from the hand-off path to
+  // the in-app updater, which is exactly the route that cannot repair a
+  // broken installer.
+  for (const candidate of [
+    path.join(matlensHome, 'matlens-setup.exe'),
+    path.join(matlensHome, 'hermes-setup.exe')
+  ]) {
+    if (fileExists(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
 }
 
 /**
