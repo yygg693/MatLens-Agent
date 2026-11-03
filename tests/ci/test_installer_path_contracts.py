@@ -326,3 +326,106 @@ def test_rust_sources_do_not_hardcode_the_legacy_home_default(relative_path: str
         "default_home_root() must resolve to ~/.matlens, not a legacy tree"
     )
     assert 'home.join(".hermes")' not in default_block
+
+
+class TestLegacyHomeResolutionAgreement:
+    """Five implementations resolve the home root; they must agree exactly.
+
+    The Python CLI, the Rust installer, the Electron desktop and both install
+    scripts each resolve "where does this user's data live" on their own.
+    A pre-rename user has that data under ``~/.hermes`` (or the old
+    ``%LOCALAPPDATA%\\hermes``), so all five must fall back to the legacy
+    tree — otherwise the installer writes to one tree while the backend reads
+    from another and the user's config appears to have vanished.
+
+    The subtle rule that is easiest to get wrong: ``HERMES_HOME`` is honoured
+    **only when its directory exists**.  Unlike ``MATLENS_HOME`` the user
+    never chose that value — it is a leftover that may point at a deleted
+    tree — so trusting it blindly relocates the user's data.
+    """
+
+    def test_python_reads_the_legacy_env_name(self) -> None:
+        source = _read(REPO_ROOT / "matlens_constants.py")
+        assert 'os.environ.get("HERMES_HOME"' in source, (
+            "the Python backend must still read the pre-rename $HERMES_HOME"
+        )
+
+    def test_python_guards_the_legacy_env_with_an_existence_check(self) -> None:
+        source = _read(REPO_ROOT / "matlens_constants.py")
+        legacy_at = source.find('os.environ.get("HERMES_HOME"')
+        assert legacy_at != -1
+        window = source[legacy_at : legacy_at + 600]
+        assert "_path_exists(legacy_env)" in window, (
+            "$HERMES_HOME must only be honoured when its directory exists — "
+            "a stale `setx HERMES_HOME` would otherwise relocate the user's "
+            "config, memories and sessions"
+        )
+
+    def test_rust_guards_the_legacy_env_with_an_existence_check(self) -> None:
+        source = _rust("paths.rs")
+        legacy_at = source.find('std::env::var("HERMES_HOME")')
+        assert legacy_at != -1, "the Rust installer must still read $HERMES_HOME"
+        window = source[legacy_at : legacy_at + 700]
+        assert ".exists()" in window, (
+            "$HERMES_HOME must only be honoured when its directory exists"
+        )
+
+    def test_electron_guards_the_legacy_env_with_an_existence_check(self) -> None:
+        source = _read(REPO_ROOT / "apps" / "desktop" / "electron" / "main.ts")
+        legacy_at = source.find("process.env.HERMES_HOME")
+        assert legacy_at != -1, "the desktop must still read $HERMES_HOME"
+        window = source[legacy_at : legacy_at + 300]
+        assert "directoryExists" in window, (
+            "$HERMES_HOME must only be honoured when its directory exists"
+        )
+
+    def test_install_sh_guards_the_legacy_env_with_an_existence_check(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.sh")
+        legacy_at = source.find('${HERMES_HOME:-')
+        assert legacy_at != -1, "install.sh must still read $HERMES_HOME"
+        window = source[legacy_at : legacy_at + 400]
+        assert '[ -d "$HERMES_HOME" ]' in window, (
+            "$HERMES_HOME must only be honoured when its directory exists"
+        )
+
+    def test_install_ps1_guards_the_legacy_env_with_an_existence_check(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "$env:HERMES_HOME -and (Test-Path -LiteralPath $env:HERMES_HOME" in source, (
+            "$HERMES_HOME must only be honoured when its directory exists"
+        )
+
+    def test_every_component_knows_the_pre_rename_home_root(self) -> None:
+        """The legacy *directory* fallback has to exist on all four sides.
+
+        A user who never set an env var at all still has their data in
+        ``~/.hermes``; that path must be reachable everywhere.
+        """
+        assert ".hermes" in _read(REPO_ROOT / "matlens_constants.py")
+        assert 'home.join(".hermes")' in _rust("paths.rs")
+        assert "'.hermes'" in _read(REPO_ROOT / "apps" / "desktop" / "electron" / "main.ts")
+        assert '"$HOME/.hermes"' in _read(REPO_ROOT / "scripts" / "install.sh")
+        assert '"$env:USERPROFILE\\.hermes"' in _read(REPO_ROOT / "scripts" / "install.ps1")
+
+    def test_canonical_home_is_preferred_over_the_legacy_root(self) -> None:
+        """When both trees exist the canonical one wins, on every side."""
+        python_source = _read(REPO_ROOT / "matlens_constants.py")
+        canonical_at = python_source.find("if _path_exists(canonical):")
+        legacy_at = python_source.find("for legacy in _legacy_matlens_home_roots():")
+        assert canonical_at != -1 and legacy_at != -1
+        assert canonical_at < legacy_at, (
+            "the canonical home must be preferred over the pre-rename root"
+        )
+
+        rust_source = _rust("paths.rs")
+        rust_canonical = rust_source.find("if canonical.exists()")
+        rust_legacy = rust_source.find("for legacy in legacy_home_roots()")
+        assert rust_canonical != -1 and rust_legacy != -1
+        assert rust_canonical < rust_legacy
+
+        electron_source = _read(REPO_ROOT / "apps" / "desktop" / "electron" / "main.ts")
+        electron_canonical = electron_source.find(
+            "if (!directoryExists(canonicalHome) && directoryExists(localappdataLegacy))"
+        )
+        assert electron_canonical != -1, (
+            "the desktop must prefer the canonical home over the legacy root"
+        )

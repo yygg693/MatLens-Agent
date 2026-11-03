@@ -52,9 +52,19 @@ pub fn hermes_home() -> PathBuf {
         }
     }
 
+    // The pre-rename env name is honoured only when its directory actually
+    // exists.  Unlike MATLENS_HOME the user never chose this value — it is a
+    // leftover that may point at a deleted tree, an empty directory some
+    // other tool created, or a path that never existed.  Trusting it blindly
+    // would move the user's config, memories and sessions to a different —
+    // possibly empty — directory, which is exactly the "my settings
+    // vanished" failure the rename has to avoid.
     if let Ok(legacy_path) = std::env::var("HERMES_HOME") {
         if !legacy_path.trim().is_empty() {
-            return PathBuf::from(legacy_path);
+            let candidate = PathBuf::from(legacy_path);
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
 

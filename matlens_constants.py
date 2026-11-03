@@ -72,19 +72,111 @@ def _get_platform_default_matlens_home() -> Path:
     return Path.home() / ".matlens"
 
 
+def _path_exists(path: str | Path) -> bool:
+    """Return whether ``path`` exists, treating any OS error as "absent".
+
+    A legacy path can be unreadable (permissions, a dangling symlink, a
+    network mount that is down).  Every one of those means "there is no
+    usable tree here" — which is the answer the fallback logic wants.
+    """
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
+
+
+def _legacy_matlens_home_roots() -> list[Path]:
+    """Return the pre-rename home roots, most-specific first.
+
+    These are the directories a pre-rename install used to live in. They are
+    consulted **only** when the canonical root does not exist, so nobody
+    loses their config to the rename.
+
+    Order matters and mirrors the Rust installer
+    (``apps/bootstrap-installer/src-tauri/src/paths.rs::legacy_home_roots``)
+    and the Electron desktop (``resolveMatLensHome()`` in
+    ``apps/desktop/electron/main.ts``):
+
+    * Windows: ``%LOCALAPPDATA%\\hermes`` — where the installer used to put
+      the tree.
+    * Every platform: ``~/.hermes`` — the pre-rename default of the Python
+      backend, ``install.sh`` and the desktop.
+
+    The three must agree on which legacy tree wins, otherwise a user with
+    both trees ends up with the installer writing to one and the backend
+    reading from the other.
+    """
+    roots: list[Path] = []
+
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            roots.append(Path(local_app_data) / "hermes")
+
+    try:
+        roots.append(Path.home() / ".hermes")
+    except (RuntimeError, OSError):
+        # No resolvable home directory — nothing to fall back to.
+        pass
+
+    return roots
+
+
 def _matlens_home_from_env() -> Path:
     """Resolve MATLENS_HOME from the process environment only.
 
-    Reads the ``MATLENS_HOME`` env var, falling back to the platform-native
-    default.  Deliberately ignores the context-local override installed by
+    Resolution order — deliberately identical to the Rust installer
+    (``paths.rs::hermes_home``) and the Electron desktop
+    (``resolveMatLensHome()``):
+
+    1. ``MATLENS_HOME`` env var (canonical) — honoured unconditionally, the
+       user asked for it explicitly.
+    2. ``HERMES_HOME`` env var (pre-rename spelling) — honoured **only when
+       the directory actually exists**.  Unlike ``MATLENS_HOME`` this name
+       was never a choice the current user made; it is a leftover that may
+       point at a deleted tree (a stale ``setx``), at a directory some other
+       tool created empty, or at a path that never existed.  Trusting it
+       blindly would move the user's config, memories and sessions to a
+       different — possibly empty — directory, which is precisely the
+       "my settings vanished" failure the rename has to avoid.
+    3. The canonical default (``~/.matlens``) — if it already exists.
+    4. A pre-rename root (``~/.hermes`` / ``%LOCALAPPDATA%\\hermes``) — if
+       one of those exists.
+    5. The canonical default.
+
+    Steps 3-4 are what keep a pre-rename user's data reachable after the
+    rename: their ``config.yaml``, API keys, memories and sessions live in
+    the legacy tree, and pointing the backend at a fresh empty
+    ``~/.matlens`` would make all of it appear to have vanished.
+
+    Deliberately ignores the context-local override installed by
     :func:`set_matlens_home_override`, so this reflects the process/launch
     scope rather than a per-task profile.  Shared by :func:`get_matlens_home`
     and :func:`get_process_matlens_home` so the two never drift.
+
+    Note this does **not** write the resolved value back into
+    ``os.environ["MATLENS_HOME"]`` — the legacy fallback is a read-only
+    probe.  Persisting it would make the choice sticky and override a
+    ``MATLENS_HOME`` the user sets later in the same session.
     """
     val = os.environ.get("MATLENS_HOME", "").strip()
     if val:
         return Path(val)
-    return _get_platform_default_matlens_home()
+
+    legacy_env = os.environ.get("HERMES_HOME", "").strip()
+    if legacy_env and _path_exists(legacy_env):
+        return Path(legacy_env)
+
+    canonical = _get_platform_default_matlens_home()
+
+    if _path_exists(canonical):
+        return canonical
+
+    for legacy in _legacy_matlens_home_roots():
+        if _path_exists(legacy):
+            return legacy
+
+    return canonical
 
 
 def _warn_profile_fallback_once() -> None:
@@ -92,12 +184,18 @@ def _warn_profile_fallback_once() -> None:
 
     Guard: if a non-default profile is sticky-active but ``MATLENS_HOME`` is
     unset, the fallback to the default profile is almost certainly wrong.
+
+    The ``active_profile`` marker is read from the home we actually resolve
+    to — which may be a pre-rename legacy root (``~/.hermes``) rather than
+    the canonical default.  Reading it from the canonical default instead
+    would miss a profile that is active in the tree this process is really
+    going to use.
     """
     global _profile_fallback_warned
     if _profile_fallback_warned:
         return
     try:
-        fallback_home = _get_platform_default_matlens_home()
+        fallback_home = _matlens_home_from_env()
         active_path = fallback_home / "active_profile"
         active = active_path.read_text(encoding="utf-8").strip() if active_path.exists() else ""
     except (UnicodeDecodeError, OSError):
@@ -128,9 +226,17 @@ def get_matlens_home() -> Path:
     """Return the MatLens home directory (default: platform-native path).
 
     Resolution order: context-local override (see
-    :func:`set_matlens_home_override`) → ``MATLENS_HOME`` env var → the
-    platform-native default.  This is the single source of truth — all other
+    :func:`set_matlens_home_override`) → ``MATLENS_HOME`` env var →
+    ``HERMES_HOME`` env var → the canonical default (``~/.matlens``) → a
+    pre-rename root (``~/.hermes`` / ``%LOCALAPPDATA%\\hermes``) → the
+    canonical default.  This is the single source of truth — all other
     copies should import this.
+
+    The legacy steps exist so a pre-rename user's ``config.yaml``, API keys,
+    memories and sessions stay reachable after the rename instead of
+    appearing to have vanished into a fresh empty directory.  They mirror
+    the Rust installer and the Electron desktop exactly; see
+    :func:`_matlens_home_from_env` for the full ordering.
 
     When ``MATLENS_HOME`` is unset but an ``active_profile`` file indicates
     a non-default profile is active, logs a loud one-shot warning to
@@ -169,9 +275,10 @@ def get_process_matlens_home() -> Path:
 
     Unlike :func:`get_matlens_home`, this never follows the context-local
     override set by :func:`set_matlens_home_override`.  It resolves only the
-    process ``MATLENS_HOME`` env var (falling back to the platform default),
-    so it reflects the scope the process was launched under **as long as
-    nothing mutates ``os.environ`` in-process**.
+    process environment — ``MATLENS_HOME``, then ``HERMES_HOME``, then a
+    pre-rename root, then the platform default — so it reflects the scope the
+    process was launched under **as long as nothing mutates ``os.environ``
+    in-process**.
 
     Use this for machine/process-level dashboard-owned assets — theme YAML,
     dashboard plugin manifests — that live under the server's launch home and
@@ -187,10 +294,10 @@ def get_process_matlens_home() -> Path:
 # MATLENS_HOME against the native home on every call (~80us of path
 # resolution), and it is called at 31+ sites — every _load_global_auth_store()
 # (per provider row in the /model picker), kanban, backup, gateway, update.
-# Its result depends only on (MATLENS_HOME, platform native home), which are
-# compared for free on each call, so the memo is freshness-correct even if a
-# test or plugin mutates MATLENS_HOME mid-process.
-_default_matlens_root_memo: "tuple[str, str, Path] | None" = None
+# Its result depends only on (MATLENS_HOME, HERMES_HOME, platform native home),
+# which are compared for free on each call, so the memo is freshness-correct
+# even if a test or plugin mutates MATLENS_HOME mid-process.
+_default_matlens_root_memo: "tuple[str, str, str, Path] | None" = None
 
 
 def get_default_matlens_root() -> Path:
@@ -213,30 +320,49 @@ def get_default_matlens_root() -> Path:
     global _default_matlens_root_memo
     native_home = _get_platform_default_matlens_home()
     env_home = os.environ.get("MATLENS_HOME", "")
+    # Mirror the resolution rule in _matlens_home_from_env(): the legacy env
+    # name only counts when its directory actually exists, so a stale
+    # `setx HERMES_HOME` pointing at a deleted tree cannot relocate the root.
+    legacy_env = os.environ.get("HERMES_HOME", "").strip()
+    if legacy_env and not _path_exists(legacy_env):
+        legacy_env = ""
     if _default_matlens_root_memo is not None:
-        memo_native, memo_env, memo_result = _default_matlens_root_memo
-        if memo_native == str(native_home) and memo_env == env_home:
+        memo_native, memo_env, memo_legacy, memo_result = _default_matlens_root_memo
+        if (
+            memo_native == str(native_home)
+            and memo_env == env_home
+            and memo_legacy == legacy_env
+        ):
             return memo_result
 
-    if not env_home:
-        result = native_home
+    # The resolved home — which honours MATLENS_HOME, then HERMES_HOME, then a
+    # pre-rename root.  Using it as the base keeps `profile list` pointed at
+    # the tree that actually holds the data: a pre-rename user whose home
+    # resolved to ~/.hermes must see the profiles under ~/.hermes, not an
+    # empty list under a fresh ~/.matlens.
+    resolved_home = _matlens_home_from_env()
+
+    # Nothing was set explicitly, so the root is whatever the resolution
+    # landed on.  When that is the canonical default, that IS the root.
+    if not env_home and not legacy_env:
+        result = resolved_home
     else:
-        env_path = Path(env_home)
+        env_path = resolved_home
         try:
             env_path.resolve().relative_to(native_home.resolve())
             # MATLENS_HOME is under ~/.matlens (normal or profile mode)
             result = native_home
         except ValueError:
-            # Docker / custom deployment.
+            # Docker / custom deployment, or a pre-rename home root.
             # Check if this is a profile path: <root>/profiles/<name>
             # If the immediate parent dir is named "profiles", the root is
             # the grandparent — this covers Docker profiles correctly.
             if env_path.parent.name == "profiles":
                 result = env_path.parent.parent
             else:
-                # Not a profile path — MATLENS_HOME itself is the root
+                # Not a profile path — the resolved home itself is the root
                 result = env_path
-    _default_matlens_root_memo = (str(native_home), env_home, result)
+    _default_matlens_root_memo = (str(native_home), env_home, legacy_env, result)
     return result
 
 

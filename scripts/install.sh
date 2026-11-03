@@ -45,11 +45,27 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:yygg693/MatLens-Agent.git"
 REPO_URL_HTTPS="https://github.com/yygg693/MatLens-Agent.git"
-# Data root for config / sessions / memories.  MATLENS_HOME is canonical;
-# HERMES_HOME is the pre-rename name and is still honoured so an existing
-# export keeps working.  The default matches the backend's own default
-# (~/.matlens) so a CLI install and the desktop agree on one tree.
-MATLENS_HOME="${MATLENS_HOME:-${HERMES_HOME:-$HOME/.matlens}}"
+# Data root for config / sessions / memories.  MATLENS_HOME is canonical.
+# HERMES_HOME is the pre-rename name: it is honoured only when its directory
+# actually exists, because the user never chose that value — it may be a
+# stale export pointing at a deleted tree, and blindly trusting it would move
+# their config, memories and sessions to a different — possibly empty —
+# directory.  A pre-rename home root (~/.hermes) is honoured the same way:
+# only when the canonical default is absent.  The default matches the
+# backend's own default (~/.matlens) so a CLI install and the desktop agree
+# on one tree.
+_matlens_default_home="$HOME/.matlens"
+if [ -n "${MATLENS_HOME:-}" ]; then
+    MATLENS_HOME="$MATLENS_HOME"
+elif [ -n "${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
+    MATLENS_HOME="$HERMES_HOME"
+elif [ -d "$_matlens_default_home" ]; then
+    MATLENS_HOME="$_matlens_default_home"
+elif [ -d "$HOME/.hermes" ]; then
+    MATLENS_HOME="$HOME/.hermes"
+else
+    MATLENS_HOME="$_matlens_default_home"
+fi
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
 # explicit directory — if so we never override it.

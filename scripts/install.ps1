@@ -30,12 +30,32 @@ param(
     # existing tree pass -ForceCommit.
     [switch]$ForceCommit,
     [string]$Tag = "",
-    # Home root for config / sessions / memories. MATLENS_HOME is canonical;
-    # HERMES_HOME is the pre-rename name and is still accepted so an existing
-    # `setx HERMES_HOME` keeps working. The default matches the backend's own
+    # Home root for config / sessions / memories. MATLENS_HOME is canonical.
+    # HERMES_HOME is the pre-rename name: honoured only when its directory
+    # actually exists, because the user never chose that value — it may be a
+    # stale `setx` pointing at a deleted tree, and trusting it blindly would
+    # move their config, memories and sessions to a different — possibly
+    # empty — directory. A pre-rename home root (~/.hermes, or the old
+    # %LOCALAPPDATA%\hermes) is honoured the same way: only when the
+    # canonical default is absent. The default matches the backend's own
     # default (~/.matlens) so a CLI install and the desktop agree on one tree.
-    [string]$HermesHome = $(if ($env:MATLENS_HOME) { $env:MATLENS_HOME } elseif ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:USERPROFILE\.matlens" }),
-    [string]$InstallDir = $(if ($env:MATLENS_HOME) { "$env:MATLENS_HOME\matlens-agent" } elseif ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:USERPROFILE\.matlens\matlens-agent" }),
+    #
+    # Must stay in lockstep with matlens_constants._matlens_home_from_env()
+    # (Python), paths.rs::hermes_home() (Rust) and resolveMatLensHome()
+    # (Electron) — all four resolve the same tree.
+    [string]$HermesHome = $(
+        if ($env:MATLENS_HOME) { $env:MATLENS_HOME }
+        elseif ($env:HERMES_HOME -and (Test-Path -LiteralPath $env:HERMES_HOME -PathType Container)) { $env:HERMES_HOME }
+        elseif (Test-Path -LiteralPath "$env:USERPROFILE\.matlens" -PathType Container) { "$env:USERPROFILE\.matlens" }
+        elseif ($env:LOCALAPPDATA -and (Test-Path -LiteralPath "$env:LOCALAPPDATA\hermes" -PathType Container)) { "$env:LOCALAPPDATA\hermes" }
+        elseif (Test-Path -LiteralPath "$env:USERPROFILE\.hermes" -PathType Container) { "$env:USERPROFILE\.hermes" }
+        else { "$env:USERPROFILE\.matlens" }
+    ),
+    [string]$InstallDir = $(
+        if ($env:MATLENS_HOME) { "$env:MATLENS_HOME\matlens-agent" }
+        elseif ($env:HERMES_HOME -and (Test-Path -LiteralPath $env:HERMES_HOME -PathType Container)) { "$env:HERMES_HOME\hermes-agent" }
+        else { "$env:USERPROFILE\.matlens\matlens-agent" }
+    ),
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -341,7 +361,10 @@ if ($PSBoundParameters.ContainsKey('HermesHome')) {
 } else {
     $HermesHome = ConvertTo-LongPath $(
         if ($env:MATLENS_HOME) { $env:MATLENS_HOME }
-        elseif ($env:HERMES_HOME) { $env:HERMES_HOME }
+        elseif ($env:HERMES_HOME -and (Test-Path -LiteralPath $env:HERMES_HOME -PathType Container)) { $env:HERMES_HOME }
+        elseif (Test-Path -LiteralPath "$env:USERPROFILE\.matlens" -PathType Container) { "$env:USERPROFILE\.matlens" }
+        elseif ($env:LOCALAPPDATA -and (Test-Path -LiteralPath "$env:LOCALAPPDATA\hermes" -PathType Container)) { "$env:LOCALAPPDATA\hermes" }
+        elseif (Test-Path -LiteralPath "$env:USERPROFILE\.hermes" -PathType Container) { "$env:USERPROFILE\.hermes" }
         else { "$env:USERPROFILE\.matlens" }
     )
 }
@@ -350,7 +373,7 @@ if ($PSBoundParameters.ContainsKey('InstallDir')) {
 } else {
     $InstallDir = ConvertTo-LongPath $(
         if ($env:MATLENS_HOME) { "$env:MATLENS_HOME\matlens-agent" }
-        elseif ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" }
+        elseif ($env:HERMES_HOME -and (Test-Path -LiteralPath $env:HERMES_HOME -PathType Container)) { "$env:HERMES_HOME\hermes-agent" }
         else { "$env:USERPROFILE\.matlens\matlens-agent" }
     )
 }

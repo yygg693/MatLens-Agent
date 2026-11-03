@@ -649,7 +649,14 @@ function resolveMatLensHome() {
     return normalizeMatLensHomeRoot(process.env.MATLENS_HOME)
   }
 
-  if (process.env.HERMES_HOME) {
+  // The pre-rename env name is honoured only when its directory actually
+  // exists. Unlike MATLENS_HOME the user never chose this value — it is a
+  // leftover that may point at a deleted tree, an empty directory some other
+  // tool created, or a path that never existed. Trusting it blindly would
+  // move the user's config, memories and sessions to a different — possibly
+  // empty — directory, which is exactly the "my settings vanished" failure
+  // the rename has to avoid.
+  if (process.env.HERMES_HOME && directoryExists(process.env.HERMES_HOME)) {
     return normalizeMatLensHomeRoot(process.env.HERMES_HOME)
   }
 
@@ -664,7 +671,15 @@ function resolveMatLensHome() {
     // backend silently falls back to its own default and reports "No inference
     // provider configured" despite a valid configured home (#45471).
     // Consult the live User-scoped registry value before the default below.
-    const fromRegistry = readWindowsUserEnvVar('MATLENS_HOME') || readWindowsUserEnvVar('HERMES_HOME')
+    const fromRegistry = readWindowsUserEnvVar('MATLENS_HOME')
+    || (() => {
+      const legacy = readWindowsUserEnvVar('HERMES_HOME')
+
+      // Same rule as the env block above: the legacy name only counts when
+      // its directory exists. A `setx HERMES_HOME` left over from before the
+      // rename is far more likely to be stale than live.
+      return legacy && directoryExists(legacy) ? legacy : ''
+    })()
 
     if (fromRegistry) {
       return normalizeMatLensHomeRoot(fromRegistry)
@@ -713,11 +728,14 @@ function pathWithHermesManagedNode(...entries) {
 // before the rename would silently lose their install.
 const ACTIVE_HERMES_ROOT = (() => {
   const canonical = path.join(HERMES_HOME, 'matlens-agent')
+
   if (directoryExists(canonical)) {
     return canonical
   }
+
   return path.join(HERMES_HOME, 'hermes-agent')
 })()
+
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner

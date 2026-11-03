@@ -427,6 +427,7 @@ title: 'Hermes'  (窗口标题, 10218 / 10318 / 11173)
 | **`hermes://` 深链兼容期？** | **立即弃用**。协议 canonical scheme 改为 `matlens://`；解析阶段仍兼容 `hermes`，但不再注册旧 scheme。 |
 | **appId 改名影响更新通道？** | 桌面端**自行更新**，不依赖 Nous 的更新通道。`appId` 与更新通道无关，留待后续高风险批次。 |
 | **`website/` 是不是正式文档站？** | 用途暂不明确，**本轮不动**。 |
+| **`HERMES_HOME` 环境变量怎么处理？** | **保留，但只在目录确实存在时生效**（§8.6）。它不是用户选的路径，而是改名前的遗留名 —— 陈旧或空目录比有效目录更常见，无条件信任它会把用户数据搬到空目录。`MATLENS_HOME` 无条件生效。 |
 
 ---
 
@@ -588,10 +589,93 @@ legacy 名一律**只读**：存量安装的标记文件、安装目录、暂存
 
 ---
 
+## 8.6 home 根解析的对齐（D1 的第一半：只读回落）
+
+批次 0 的三次提交落地后做了一次四方交叉核对，发现 **home 根（"用户的数据在哪"）
+的解析有五份独立实现**，而它们对 legacy 的处理并不一致：
+
+| 组件 | `MATLENS_HOME` | `HERMES_HOME` | legacy 目录树回落 |
+|---|---|---|---|
+| Electron 桌面端 | ✅ | ✅ | ✅ `~/.hermes` / `%LOCALAPPDATA%\hermes` |
+| Rust 安装器 | ✅ | ✅ | ✅ 同上 |
+| `scripts/install.sh` | ✅ | ✅ | ❌ |
+| `scripts/install.ps1` | ✅ | ✅ | ❌ |
+| **Python 后端** | ✅ | **❌** | **❌** |
+
+**Python 后端是唯一一个不回落 legacy 的 —— 而它恰恰是读用户数据的那一方。**
+老用户（改名前就在用，`~/.hermes` 里躺着 `config.yaml` / API key / 记忆 / 会话）
+升级后，Python 指向一个空的 `~/.matlens`，而安装器和桌面端指向 `~/.hermes`：
+安装器写一棵��，后端读另一棵 —— 用户的数据"消失"了。
+
+这正是 D1 的核心风险，而批次 0 只在 Rust 侧做了回落。
+
+### 统一的解析顺序
+
+五个实现现在走同一条链：
+
+```
+MATLENS_HOME env（无条件生效）
+  → HERMES_HOME env（仅当目录存在）
+    → ~/.matlens（存在则用）
+      → legacy 根 ~/.hermes / %LOCALAPPDATA%\hermes（存在则用）
+        → ~/.matlens
+```
+
+### 一条容易做反的规则：`HERMES_HOME` 必须带存在性检查
+
+`MATLENS_HOME` 无条件生效是对的 —— 用户显式设置过。
+但 `HERMES_HOME` **不是用户选的**，它是改名前的遗留名，可能是：
+
+- 一条陈旧的 `setx`，指向早已删除的目录；
+- 某个别的工具建出来的空目录；
+- 一个从来没存在过的路径。
+
+无条件信任它 = 把用户的配置、记忆和会话搬到一个不同的（可能是空的）目录 ——
+这恰恰是改名要避免的失败模式。
+
+> **本机实测**：这台机器的系统环境变量里就有一条
+> `HERMES_HOME=C:\Users\22091\AppData\Local\hermes`，而那个目录**根本不存在**。
+> 盲目回落它会让 MatLens 读到一个空目录、而真实的 `~/.matlens` 被无视。
+> 这不是假设，是这台机器上的既成事实。
+
+因此规则是：**legacy env 只在目录确实存在时生效**，与 legacy 目录树的处理方式一致。
+此前 Electron 与 Rust 都是无条件信任 env 变量 —— 那也是错的，一并改掉。
+
+### 连带修掉的两处
+
+- `matlens_constants.get_default_matlens_root()` 原本只看 `MATLENS_HOME`，
+  无视 `HERMES_HOME` 与 legacy 回落。`profile list` 会看到一份空的 profile
+  列表，而真实数据在 legacy 树里。现在它基于统一的解析结果。
+- `_warn_profile_fallback_once()` 的 `active_profile` 标记原本固定从 canonical
+  默认目录读。回落目标变成 legacy 目录后，这个标记可能就在 legacy 树里，
+  于是"profile 落错位置"的告警会漏报。改成从**实际解析结果**读。
+
+### 防复发
+
+- `tests/test_hermes_constants.py::TestLegacyHomeFallback`（8 项）锁定 Python 侧的
+  六种解析场景，含"陈旧 legacy env 被忽略"和"回落是只读的、不写回环境变量"。
+- `tests/ci/test_installer_path_contracts.py::TestLegacyHomeResolutionAgreement`
+  （7 项）把五个实现的规则钉在一起：legacy env 的存在性检查、legacy 目录树的
+  存在、canonical 优先于 legacy 根。
+
+### 验证
+
+- Python：新增 15 项全绿；受影响的既有测试回到**基线失败数**（3 项，
+  均为 Windows 无符号链接权限 / profile 路径的平台差异）
+- `cargo check --all-targets`：0 error
+- 桌面端三个 TS 工程 typecheck 0 error、ESLint 0 error
+- electron 全量 1195 项：26 项失败 —— 与上一轮基线**完全相同的 26 项、同 6 个文件**
+  （SSH / chmod / git 的 Windows 差异），引入 0 回归
+- `install.ps1` PowerShell AST 解析无错误；`install.sh` `bash -n` 通过
+- install.sh / install.ps1 的 home 解析在 POSIX 与 Windows 上各实测三个场景，
+  行为一致
+
+---
+
 ## 9. 尚未处理
 
 - **C1 打包配置**（`appId` / `productName`）—— 高风险批次。Rust crate 的 `[[bin]] name = "Hermes-Setup"` 与 `tauri.conf.json` 的 `productName` / `identifier` 同属此项。
-- **D1-D5 磁盘路径迁移** —— 高风险批次，需分两个版本：先只读回落，再主动迁移
+- **D1-D5 磁盘路径迁移** —— 高风险批次。**D1 的"只读回落"这一半已在 §8.6 完成**；剩余的是"主动迁移"（把 legacy 树的数据搬到 canonical 树），以及 D2-D5
 - **E 文档网站**（`website/`）—— 单独 PR
 
 

@@ -56,13 +56,19 @@ class TestGetDefaultMatLensRoot:
 
     @pytest.mark.windows_only
     def test_no_matlens_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
-        """Native Windows falls back to %LOCALAPPDATA%\\matlens, not ~/.matlens."""
+        """Native Windows uses ~/.matlens too, not %LOCALAPPDATA%\\matlens.
+
+        The %LOCALAPPDATA% default was dropped on 2026-10-16: 30+ call sites
+        hard-code ``~/.matlens``, so a platform-specific default gave a
+        process that bypassed the service a *different, empty* home than the
+        one the service actually used.
+        """
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("MATLENS_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
 
-        assert get_default_matlens_root() == local_appdata / "matlens"
+        assert get_default_matlens_root() == tmp_path / "Home" / ".matlens"
 
     def test_result_memoised_until_env_or_home_changes(self, tmp_path, monkeypatch):
         """Repeated calls reuse the memo; MATLENS_HOME / home changes invalidate.
@@ -129,14 +135,20 @@ class TestGetMatLensHome:
 
     @pytest.mark.windows_only
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
-        """When MATLENS_HOME is unset on Windows, use %LOCALAPPDATA%\\matlens."""
+        """When MATLENS_HOME is unset on Windows, use ~/.matlens.
+
+        The %LOCALAPPDATA% default was dropped on 2026-10-16 — see
+        ``matlens_constants._get_platform_default_matlens_home``.  What the
+        old %LOCALAPPDATA%\\hermes tree still gets is a *legacy fallback*,
+        and only when it actually exists.
+        """
         local_appdata = tmp_path / "LocalAppData"
         monkeypatch.delenv("MATLENS_HOME", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
         monkeypatch.setattr(matlens_constants, "_profile_fallback_warned", False)
 
-        assert get_matlens_home() == local_appdata / "matlens"
+        assert get_matlens_home() == tmp_path / "Home" / ".matlens"
 
 
 class TestGetProcessMatLensHome:
@@ -1099,3 +1111,104 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_matlens_managed_node() is False
         assert calls["n"] == 1
+
+
+class TestLegacyHomeFallback:
+    """The pre-rename home tree must stay reachable after the rename.
+
+    A user who installed before the rename has their ``config.yaml``, API
+    keys, memories and sessions under ``~/.hermes`` (or the old
+    ``%LOCALAPPDATA%\\hermes``).  If the backend resolves to a fresh empty
+    ``~/.matlens`` instead, all of it appears to have vanished.
+
+    The resolution order is shared by four implementations — this module,
+    the Rust installer, the Electron desktop and both install scripts — and
+    they must not drift:
+
+        MATLENS_HOME env  →  HERMES_HOME env (if it exists)
+                           →  ~/.matlens        (if it exists)
+                           →  pre-rename root   (if it exists)
+                           →  ~/.matlens
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_env(self, tmp_path, monkeypatch):
+        """Clear both env vars and pin Path.home() to a temp dir."""
+        monkeypatch.delenv("MATLENS_HOME", raising=False)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+        monkeypatch.setattr(matlens_constants, "_profile_fallback_warned", False)
+        monkeypatch.setattr(matlens_constants, "_default_matlens_root_memo", None)
+
+    def test_canonical_env_wins_over_everything(self, tmp_path, monkeypatch):
+        explicit = tmp_path / "explicit"
+        legacy = tmp_path / "Home" / ".hermes"
+        legacy.mkdir(parents=True)
+        monkeypatch.setenv("MATLENS_HOME", str(explicit))
+
+        assert get_matlens_home() == explicit
+
+    def test_legacy_env_is_honoured_when_its_directory_exists(self, tmp_path, monkeypatch):
+        legacy_home = tmp_path / "legacy-env"
+        legacy_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(legacy_home))
+
+        assert get_matlens_home() == legacy_home
+
+    def test_stale_legacy_env_pointing_at_a_deleted_tree_is_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        """A leftover `setx HERMES_HOME` must not relocate the user's data.
+
+        The legacy name was never a value the current user chose — it can
+        point at a directory that was deleted, was never created, or was
+        left empty by some other tool.  Trusting it blindly would move
+        config, memories and sessions to a different (possibly empty) tree,
+        which is exactly the failure the rename has to avoid.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "never-existed"))
+
+        assert get_matlens_home() == tmp_path / "Home" / ".matlens"
+
+    def test_legacy_home_root_is_honoured_when_canonical_is_absent(
+        self, tmp_path, monkeypatch
+    ):
+        legacy = tmp_path / "Home" / ".hermes"
+        legacy.mkdir(parents=True)
+
+        assert get_matlens_home() == legacy
+
+    def test_canonical_home_wins_over_the_legacy_root(self, tmp_path, monkeypatch):
+        canonical = tmp_path / "Home" / ".matlens"
+        canonical.mkdir(parents=True)
+        legacy = tmp_path / "Home" / ".hermes"
+        legacy.mkdir(parents=True)
+
+        assert get_matlens_home() == canonical
+
+    def test_fallback_is_read_only_and_does_not_mutate_the_environment(
+        self, tmp_path, monkeypatch
+    ):
+        """The resolved value must not be written back into os.environ.
+
+        Persisting it would make the choice sticky and override a
+        ``MATLENS_HOME`` the user sets later in the same session.
+        """
+        legacy = tmp_path / "Home" / ".hermes"
+        legacy.mkdir(parents=True)
+
+        assert get_matlens_home() == legacy
+        assert "MATLENS_HOME" not in os.environ
+
+    def test_process_home_follows_the_same_fallback(self, tmp_path, monkeypatch):
+        legacy = tmp_path / "Home" / ".hermes"
+        legacy.mkdir(parents=True)
+
+        assert get_process_matlens_home() == legacy
+
+    def test_default_root_follows_the_legacy_home(self, tmp_path, monkeypatch):
+        """`profile list` must see the profiles of the tree actually in use."""
+        legacy = tmp_path / "Home" / ".hermes"
+        (legacy / "profiles" / "coder").mkdir(parents=True)
+
+        assert get_default_matlens_root() == legacy
