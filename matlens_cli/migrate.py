@@ -1,7 +1,8 @@
 """CLI handlers for ``matlens migrate ...``.
 
-Currently exposes only ``matlens migrate xai`` — diagnoses and (with --apply)
-rewrites references to xAI models retired on May 15, 2026.
+Exposes ``matlens migrate xai`` — diagnoses and (with --apply) rewrites
+references to xAI models retired on May 15, 2026 — and ``matlens migrate
+home`` — copies a pre-rename home tree into the canonical one.
 """
 from __future__ import annotations
 
@@ -18,8 +19,13 @@ def cmd_migrate(args: Any) -> int:
     sub = getattr(args, "migrate_type", None)
     if sub == "xai":
         return cmd_migrate_xai(args)
+    if sub == "home":
+        return cmd_migrate_home(args)
 
-    print("usage: matlens migrate xai [--apply] [--no-backup]", file=sys.stderr)
+    print(
+        "usage: matlens migrate {xai [--apply] [--no-backup] | home [--apply]}",
+        file=sys.stderr,
+    )
     return 2
 
 
@@ -113,3 +119,73 @@ def _resolve_config_path() -> Path:
     from matlens_cli.config import get_matlens_home
 
     return get_matlens_home() / "config.yaml"
+
+
+def cmd_migrate_home(args: Any) -> int:
+    """Copy a pre-rename home tree (``~/.hermes``) into the canonical one.
+
+    Dry-run by default. ``--apply`` performs the copy. Nothing is ever
+    deleted and an existing canonical file always wins.
+    """
+    from matlens_cli.home_migration import (
+        apply_home_migration,
+        format_report,
+        plan_home_migration,
+    )
+
+    apply = bool(getattr(args, "apply", False))
+
+    legacy_home, canonical_home = _resolve_migration_homes()
+
+    print()
+    print(color("◆ MatLens Home Migration", Colors.CYAN, Colors.BOLD))
+    print()
+
+    if legacy_home is None:
+        print(
+            f"  {color('✓', Colors.GREEN)} No pre-rename MatLens home directory found "
+            "— nothing to migrate."
+        )
+        return 0
+
+    try:
+        report = (
+            apply_home_migration(legacy_home, canonical_home)
+            if apply
+            else plan_home_migration(legacy_home, canonical_home)
+        )
+    except Exception as exc:
+        print(f"  {color('✗', Colors.RED)} Migration failed: {exc}", file=sys.stderr)
+        return 1
+
+    for line in format_report(report).splitlines():
+        print(f"  {line}")
+
+    if report.failed:
+        return 1
+
+    if not apply and report.has_work:
+        print()
+        print(color(
+            "Re-run with `matlens migrate home --apply` to copy the files.",
+            Colors.DIM,
+        ))
+
+    return 0
+
+
+def _resolve_migration_homes() -> tuple[Path | None, Path]:
+    """Locate the legacy home tree and the canonical home.
+
+    Returns ``(None, canonical)`` when there is no legacy tree to migrate
+    from.
+    """
+    from matlens_constants import _get_platform_default_matlens_home, _legacy_matlens_home_roots
+
+    canonical = Path(_get_platform_default_matlens_home())
+
+    for legacy in _legacy_matlens_home_roots():
+        if legacy.is_dir():
+            return legacy, canonical
+
+    return None, canonical

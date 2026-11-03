@@ -12127,7 +12127,7 @@ def main():
     # =========================================================================
     # migrate command
     # =========================================================================
-    from matlens_cli.migrate import cmd_migrate, cmd_migrate_xai
+    from matlens_cli.migrate import cmd_migrate, cmd_migrate_home, cmd_migrate_xai
 
     migrate_parser = subparsers.add_parser(
         "migrate",
@@ -12160,6 +12160,26 @@ def main():
         help="Skip the timestamped backup of config.yaml when applying",
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
+
+    migrate_home = migrate_subparsers.add_parser(
+        "home",
+        help="Copy a pre-rename home directory (~/.hermes) into the canonical one",
+        description=(
+            "MatLens was renamed from Hermes. Users of the old name keep their "
+            "config, API keys, memories and sessions in the pre-rename home "
+            "directory (~/.hermes, or %LOCALAPPDATA%\\hermes on Windows). "
+            "This command copies that tree into the canonical home directory "
+            "(~/.matlens). Dry-run by default; --apply performs the copy. "
+            "Nothing is ever deleted, and a file that already exists in the "
+            "canonical tree is never overwritten."
+        ),
+    )
+    migrate_home.add_argument(
+        "--apply",
+        action="store_true",
+        help="Perform the copy (default: dry-run, no writes)",
+    )
+    migrate_home.set_defaults(func=cmd_migrate_home)
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
