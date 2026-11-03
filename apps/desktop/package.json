@@ -1,9 +1,9 @@
 {
   "name": "matlens",
-  "productName": "Hermes",
+  "productName": "MatLens",
   "private": true,
   "version": "0.17.0",
-  "description": "Native desktop shell for Hermes Agent.",
+  "description": "Native desktop shell for MatLens Agent.",
   "author": "Nous Research",
   "type": "module",
   "main": "dist/electron-main.mjs",
@@ -178,9 +178,9 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
+    "appId": "com.matlens.agent",
+    "productName": "MatLens",
+    "executableName": "MatLens",
     "protocols": [
       {
         "name": "MatLens Protocol",
@@ -189,7 +189,7 @@
         ]
       }
     ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "artifactName": "MatLens-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -225,12 +225,12 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "CFBundleDisplayName": "MatLens",
+        "CFBundleExecutable": "MatLens",
+        "CFBundleName": "MatLens",
+        "NSAudioCaptureUsageDescription": "MatLens uses audio capture for voice conversations.",
+        "NSCameraUsageDescription": "MatLens uses the camera when a plugin or feature you enable requests it.",
+        "NSMicrophoneUsageDescription": "MatLens uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -240,7 +240,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install MatLens",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -262,7 +262,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "MatLens",
       "target": [
         "nsis",
         "msi"
@@ -272,7 +272,7 @@
     "linux": {
       "category": "Development",
       "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "synopsis": "Native desktop shell for MatLens Agent.",
       "target": [
         "AppImage",
         "deb",
@@ -283,8 +283,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "MatLens",
+      "uninstallDisplayName": "MatLens",
       "warningsAsErrors": false
     }
   }

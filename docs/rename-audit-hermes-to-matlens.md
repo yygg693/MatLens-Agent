@@ -674,8 +674,147 @@ MATLENS_HOME env（无条件生效）
 
 ## 9. 尚未处理
 
-- **C1 打包配置**（`appId` / `productName`）—— 高风险批次。Rust crate 的 `[[bin]] name = "Hermes-Setup"` 与 `tauri.conf.json` 的 `productName` / `identifier` 同属此项。
-- **D1-D5 磁盘路径迁移** —— 高风险批次。**D1 的"只读回落"这一半已在 §8.6 完成**；剩余的是"主动迁移"（把 legacy 树的数据搬到 canonical 树），以及 D2-D5
 - **E 文档网站**（`website/`）—— 单独 PR
+
+---
+
+## 10. 批次 1：CLI 入口名断裂、C1 打包配置与 D1-D5 磁盘迁移
+
+批次 0 统一了 home 根、marker 名与安装根。但**还有一层更底层的契约没被审计到** ——
+**CLI 入口本身的名字**。
+
+### 10.1 最重要的发现：`hermes` 这个命令从来不存在
+
+`pyproject.toml` 的 `[project.scripts]` 声明的是：
+
+```toml
+matlens = "matlens_cli.main:main"
+matlens-agent = "run_agent:main"
+matlens-acp = "acp_adapter.entry:main"
+```
+
+**没有 `hermes`，也没有 `hermes_cli` 这个包。** 本机 `.venv/Scripts/` 里实测也只有
+`matlens.exe` / `matlens-agent.exe` / `matlens-acp.exe` 三个入口。
+
+而四个组件仍在按「改名之前应该存在的样子」工作：
+
+| # | 位置 | 引用 | 后果 |
+|---|---|---|---|
+| 1 | `scripts/install.ps1` | 拷贝 `hermes.exe` / `hermes-acp.exe` 到 PATH 目录 | 两个文件都不存在 → 拷贝循环**静默复制了零个文件** → 用户机器上**根本没有 `matlens` 命令** |
+| 2 | `scripts/install.ps1` | `python -m hermes_cli.main setup` | 模块不存在 → setup 向导 `ModuleNotFoundError` 崩溃 |
+| 3 | `scripts/install.ps1` | `py_compile "$InstallDir\hermes_cli\web_server.py"` | 路径不存在 → 语法检查必然失败 → **`throw` 中断整个安装流程** |
+| 4 | `scripts/desktop-update/windows.ps1` | `python -m hermes_cli.main update` | 同样缺模块 → **桌面端整条更新链路失效** |
+
+第 3 条最严重：它不是「装完少个命令」，而是**安装跑到一半直接抛错退出**。
+
+> **为什么 grep 找不到**：`hermes_cli` 是**模块名**，`hermes.exe` 是**文件名**。
+> 二者都不在「改名残留」的直觉搜索范围里 —— 改名审计盯着的是 `hermes` 这个**品牌词**，
+> 而这里的问题是「引用了一个**从来就不存在**的名字」。
+> 判定它的唯一办法是**拿 pyproject 的实际声明去对照**，或者干脆装一次看产物。
+
+### 10.2 同源问题：Windows 更新脚本只认不存在的 shim
+
+Windows 上「后端进程占住 venv 导致更新半途损坏」的防线，是探测
+`venv\Scripts\hermes.exe` 是否被锁住。这个文件同样不存在，于是：
+
+- `scripts/desktop-update/windows.ps1` 的 `Test-Path` 恒为假 → **锁检测整段被跳过**；
+- `apps/desktop/electron/main.ts` 的 `venvHermesShimPath()` 同理 → **锁检测整段被跳过**；
+- `apps/bootstrap-installer/src-tauri/src/update.rs` 的 `venv_hermes()` 同理 → 更新器的锁探测
+  **看不到真正被占住的文件**。
+
+这正是 2026-08-09 那次 "Access-denied 半更新损坏" 本该拦住的情形。
+
+### 10.3 C1 打包配置 —— 已完成
+
+`hermes://` 的 canonical scheme 在批次 0 就已改为 `matlens://`（解析端仍兼容旧 scheme，
+但不再向系统注册）。本批次补齐**产物标识**：
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `appId` | `com.nousresearch.hermes` | `com.matlens.agent` |
+| `productName` / `executableName` | `Hermes` | `MatLens` |
+| `artifactName` | `Hermes-${version}-…` | `MatLens-${version}-…` |
+| `setAppUserModelId` | `com.nousresearch.hermes` | `com.matlens.agent` |
+| Tauri `identifier` | `com.nousresearch.hermes.setup` | `com.matlens.agent.setup` |
+| Tauri `productName` | `Hermes` | `MatLens Setup` |
+| Rust `[[bin]] name` | `Hermes-Setup` | `MatLens-Setup` |
+| crate name | `hermes-bootstrap` | `matlens-bootstrap` |
+
+**改 `appId` 为什么安全**（这一项在 §7 里被挂起，此处给出了实证依据）：
+
+- 全仓**没有 `electron-updater` 依赖**，也没有 electron-builder 的 `publish` / `app-update.yml`
+  配置 —— 桌面端**自行更新**（走 `matlens-setup` → `matlens update`），不依赖 Nous 的更新通道；
+- `appId` 全仓只有 **2 处**引用：`package.json` 的定义，和 `main.ts` 里的
+  `setAppUserModelId` —— 后者必须与前者**严格一致**，否则 Windows 通知静默失效；
+- 没有卸载注册表项硬编码了旧 appId（NSIS 侧只有 `uninstallDisplayName`，是显示名）。
+
+**但产物改名必须配 legacy 回落**：改名前构建出来的 `Hermes.exe` / `Hermes.app` 仍在用户磁盘上，
+更新器若只认新名字，就**找不到自己要替换的那个 bundle**。因此 Rust 侧的产物解析器
+（`resolve_hermes_desktop_exe`）与锁探测路径（`desktop_app_payload_paths`）都改成
+**新名优先、旧名回落**。
+
+### 10.4 D1 主动迁移 —— 以显式命令的形态落地
+
+只读回落（§8.6）已保证老用户的数据不丢，但它**永不移动任何东西**。主动迁移做成
+**用户显式触发的子命令**，而不是启动时自动执行 —— 自动迁移意味着「用户升级应用，
+数据目录在后台被动了」，这是最不该发生的事。
+
+```
+matlens migrate home            # 演练，报告将要做什么
+matlens migrate home --apply    # 执行
+```
+
+安全契约（`matlens_cli/home_migration.py`）：
+
+| 规则 | 理由 |
+|---|---|
+| **只复制，绝不删除** | legacy 树原样保留，出问题可退回 |
+| **绝不覆盖** | canonical 树是运行中系统读的那一份，它赢 |
+| **默认 dry-run** | `--apply` 才写 |
+| **单文件失败不中断整体** | 一个读不动的文件不该毁掉整次迁移 |
+| **排除 `venv` / `node` / `bin` / `.git`** | 运行时产物，由安装器重建；跨版本拷贝 venv 只会得到一个坏环境 |
+| **符号链接按链接拷贝，不解引用** | 解引用会把外部文件拖进 home 树 |
+| **幂等** | 跑第二次是 no-op |
+
+迁移完成后在 legacy 树留一份 `README_MIGRATED` 说明它去了哪。
+
+**迁移过程中抓到两个自己写的 bug**（都由新增测试逼出来）：
+
+1. **边遍历边修改列表** —— `for rel_str in report.copied:` 的循环体里 `report.copied.remove(...)`，
+   会**静默跳过下一个元素**，导致部分文件从未被拷贝且不报任何错。改成 `list(...)` 拷贝后遍历。
+2. **迁移标记自己被迁移** —— `README_MIGRATED` 会被当成待迁移文件拷进 canonical 树，
+   在目标目录留下一份描述「另一个目录」的说明。已排除。
+
+### 10.5 D2-D4 —— 补齐 canonical 优先 + legacy 只读
+
+| 项 | 处理 |
+|---|---|
+| **D2** marker | `update_lock.py` 已双读；`posix.sh` / `windows.ps1` 改为**双写**（canonical + legacy）—— 否则一个改名前的 Python/Rust 读端会把当前更新当成「无锁」，**再起一个并发更新** |
+| **D3** venv shim | 桌面端 / Rust / Windows 更新脚本全部改为**同时探测** `matlens.exe` 与 `hermes.exe`。只探一个会让锁检测在另一种命名的树上**整段失效** |
+| **D4** Git 便携版 | `%LOCALAPPDATA%\matlens\git\…` 优先，`%LOCALAPPDATA%\hermes\git\…` 回落 |
+
+### 10.6 防复发
+
+- `tests/ci/test_installer_path_contracts.py` 新增 4 组、**25 项**契约：
+  - `TestCliEntryPointName` —— 钉死「所有组件调用的 CLI 必须真实存在」，并断言
+    `hermes_cli` 包**不得存在**（这是所有前提的前提）；
+  - `TestVenvShimProbing` —— 钉死 shim 双名探测；
+  - `TestProductIdentity` —— 钉死产品标识 + legacy 产物回落；
+  - `TestUpdateMarkerIsWrittenUnderBothNames` —— 钉死 marker 双写。
+- `tests/test_home_migration.py`（**23 项**）覆盖迁移的全部安全契约。
+
+### 10.7 验证
+
+| 项 | 结果 |
+|---|---|
+| `cargo check --all-targets`（GNU 目标） | **0 error**（7 个既有 dead_code warning） |
+| 桌面端三个 TS 工程 typecheck | 0 error |
+| ESLint | 0 error（115 个既有 `document` 全局 warning） |
+| electron 全量 | 1246 项，27 项失败 —— **基线复现出同样的失败**（SSH / chmod / git / 文件权限位，Windows 环境差异），引入 0 回归 |
+| Python 受影响测试 | 146 通过，2 项基线既有失败（Windows symlink 权限） |
+| 新增契约测试 + 迁移测试 | **81 项全绿**（3 项按平台跳过） |
+| `install.ps1` / `windows.ps1` PowerShell AST | 无语法错误 |
+| `install.sh` / `posix.sh` `bash -n` | 通过 |
+
 
 

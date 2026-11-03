@@ -212,20 +212,31 @@ pub async fn launch_hermes_desktop(
 /// Walks the well-known electron-builder unpacked-app paths under
 /// `install_root`. Mirrors the resolver in `cmd_gui` (apps/desktop/release/
 /// <os>-unpacked/<exe>).
+///
+/// Canonical product name is `MatLens`; a tree built before the rename ships
+/// `Hermes`. BOTH are probed — canonical first — so an updater still finds the
+/// bundle it is supposed to replace after the product was renamed.
 pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
     let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
         &[
+            ("win-unpacked", "MatLens.exe"),
+            ("win-arm64-unpacked", "MatLens.exe"),
             ("win-unpacked", "Hermes.exe"),
             ("win-arm64-unpacked", "Hermes.exe"),
         ]
     } else if cfg!(target_os = "macos") {
         &[
+            ("mac/MatLens.app/Contents/MacOS", "MatLens"),
+            ("mac-arm64/MatLens.app/Contents/MacOS", "MatLens"),
             ("mac/Hermes.app/Contents/MacOS", "Hermes"),
             ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
         ]
     } else {
-        &[("linux-unpacked", "hermes")]
+        &[
+            ("linux-unpacked", "matlens"),
+            ("linux-unpacked", "hermes"),
+        ]
     };
     for (subdir, exe) in candidates {
         let p = release_dir.join(subdir).join(exe);

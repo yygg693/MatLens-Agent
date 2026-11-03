@@ -60,6 +60,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATLENS_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
 MATLENS_HOME="${MATLENS_HOME:-${TMPDIR:-/tmp}}"
 MARKER="$MATLENS_HOME/.matlens-update-in-progress"
+# Pre-rename marker, written by older installs. It must still be honoured:
+# an update lock held under the old name has to block a new update too.
+LEGACY_MARKER="$MATLENS_HOME/.hermes-update-in-progress"
 LOG_DIR="$MATLENS_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
 RESULT="$MATLENS_HOME/.matlens-update-result.json"
@@ -358,6 +361,9 @@ finish() {
   if [ "$NO_MARKER_CLEANUP" -eq 0 ] && [ "$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')" = "$$" ]; then
     rm -f "$MARKER" 2>/dev/null || true
   fi
+  if [ "$NO_MARKER_CLEANUP" -eq 0 ] && [ "$(head -1 "$LEGACY_MARKER" 2>/dev/null | tr -d '[:space:]')" = "$$" ]; then
+    rm -f "$LEGACY_MARKER" 2>/dev/null || true
+  fi
 
   if [ "$FINAL_CODE" -ne 0 ]; then
     publish "error" "$FINAL_MSG"; stop_ui leave-window
@@ -448,6 +454,10 @@ rm -f "$RESULT" 2>/dev/null || true
 # Marker claim: same cross-process lock contract as windows.ps1 /
 # update_lock.py (the `matlens update` child adopts it via process ancestry).
 printf '%s\n%s\n' "$$" "$(date +%s)" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+# Write the legacy name too: a still-running pre-rename Python/Rust reader
+# only knows the old marker and would otherwise treat this update as
+# lock-free and start a second one.
+printf '%s\n%s\n' "$$" "$(date +%s)" > "$LEGACY_MARKER" 2>/dev/null || true
 
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then

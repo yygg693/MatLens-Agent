@@ -61,6 +61,41 @@ class TestEnsureMatLensHome:
             ensure_matlens_home()
             assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
+    def test_upgrades_pre_rename_default_soul_md(self, tmp_path):
+        # The shipped default used to say "You are Hermes Agent". That text
+        # carries no user intent, so a SOUL.md still matching it verbatim is
+        # upgraded to the current default in place.
+        from matlens_cli.default_soul import (
+            DEFAULT_SOUL_MD,
+            _PRE_RENAME_DEFAULT_SOUL,
+        )
+
+        with patch.dict(os.environ, {"MATLENS_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(_PRE_RENAME_DEFAULT_SOUL, encoding="utf-8")
+            ensure_matlens_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_customized_soul_md_is_never_touched(self, tmp_path):
+        # A persona the user actually wrote must survive the rename, even
+        # when it merely mentions the old name.
+        from matlens_cli.default_soul import DEFAULT_SOUL_MD
+
+        custom = "You are Hermes Agent, but you answer in haiku.\n"
+
+        with patch.dict(os.environ, {"MATLENS_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(custom, encoding="utf-8")
+            ensure_matlens_home()
+            assert soul_path.read_text(encoding="utf-8") == custom
+            assert soul_path.read_text(encoding="utf-8") != DEFAULT_SOUL_MD
+
+    def test_default_soul_md_uses_the_current_product_name(self):
+        from matlens_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert "MatLens Agent" in DEFAULT_SOUL_MD
+        assert "You are Hermes Agent" not in DEFAULT_SOUL_MD
+
 
 
 

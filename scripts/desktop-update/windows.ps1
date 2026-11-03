@@ -35,7 +35,7 @@
 #
 # Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
 # step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately). hermes_cli/update_lock.py's ancestry rule lets our
+# immediately). matlens_cli/update_lock.py's ancestry rule lets our
 # `hermes update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
@@ -78,10 +78,13 @@ try {
 } catch {}
 $TempDir = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
 $HermesHome = if ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
-$MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
+$MarkerPath = Join-Path $HermesHome ".matlens-update-in-progress"
+# Pre-rename marker, written by older installs. It must still be honoured:
+# an update lock held under the old name has to block a new update too.
+$LegacyMarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
-$ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+$ResultPath = Join-Path $HermesHome ".matlens-update-result.json"
 $script:Ui = $null
 
 function Write-HandoffLog([string]$Message) {
@@ -429,17 +432,19 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
 
 function Remove-MarkerIfOwned {
     if ($NoMarkerCleanup) { return }
-    try {
-        if (Test-Path -LiteralPath $MarkerPath) {
-            $firstLine = (Get-Content -LiteralPath $MarkerPath -TotalCount 1 -ErrorAction SilentlyContinue)
-            if ("$firstLine".Trim() -eq "$PID") {
-                Remove-Item -LiteralPath $MarkerPath -Force -ErrorAction SilentlyContinue
-                Write-HandoffLog "removed update marker (owned)"
-            } else {
-                Write-HandoffLog "leaving update marker: owned by pid '$firstLine', not us ($PID)"
+    foreach ($marker in @($MarkerPath, $LegacyMarkerPath)) {
+        try {
+            if (Test-Path -LiteralPath $marker) {
+                $firstLine = (Get-Content -LiteralPath $marker -TotalCount 1 -ErrorAction SilentlyContinue)
+                if ("$firstLine".Trim() -eq "$PID") {
+                    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                    Write-HandoffLog "removed update marker (owned): $marker"
+                } else {
+                    Write-HandoffLog "leaving update marker: owned by pid '$firstLine', not us ($PID)"
+                }
             }
-        }
-    } catch {}
+        } catch {}
+    }
 }
 
 function Start-DesktopRelaunch {
@@ -627,6 +632,12 @@ try {
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
         [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
+        # Write the legacy name too: a still-running pre-rename Python/Rust
+        # reader only knows the old marker and would otherwise treat this
+        # update as lock-free and start a second one.
+        try {
+            [System.IO.File]::WriteAllText($LegacyMarkerPath, "$PID`n$epoch`n")
+        } catch {}
         Write-HandoffLog "claimed update marker (pid $PID)"
     } catch {
         Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
@@ -653,8 +664,16 @@ try {
     }
 
     # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
-    $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
-    if (Test-Path -LiteralPath $shim) {
+    # Canonical shim is `matlens.exe` (pyproject's [project.scripts]); a
+    # pre-rename tree still carries `hermes.exe`. Probe both and wait for
+    # EVERY shim that exists to unlock — probing only one would skip the
+    # guard entirely whenever the other name is present.
+    $shimCandidates = @(
+        (Join-Path $InstallRoot "venv\Scripts\matlens.exe"),
+        (Join-Path $InstallRoot "venv\Scripts\hermes.exe")
+    )
+    foreach ($shim in $shimCandidates) {
+        if (-not (Test-Path -LiteralPath $shim)) { continue }
         $unlocked = $false
         $deadline = (Get-Date).AddSeconds(20)
         while ((Get-Date) -lt $deadline) {
@@ -672,11 +691,11 @@ try {
             # Something still maps the venv. --force-ing past it guarantees a
             # half-updated venv (the exact 2026-08-09 Access-denied brick).
             $finalCode = 5
-            $finalMsg = "Update aborted: another process is still holding the Hermes install open (venv\Scripts\hermes.exe locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
+            $finalMsg = "Update aborted: another process is still holding the MatLens install open ($shim locked after 20s). Nothing was changed. Close other MatLens windows/terminals and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
-        Write-HandoffLog "venv shim unlocked"
+        Write-HandoffLog "venv shim unlocked: $shim"
     }
 
     # -- 3. Run the update from the CURRENT checkout ------------------------
@@ -711,7 +730,7 @@ try {
     # never reached and apps/desktop/release is left missing -- an install whose
     # Start Menu shortcut points at a Hermes.exe that no longer exists.
     #
-    # Running the same code as `python.exe -m hermes_cli.main update` puts the
+    # Running the same code as `python.exe -m matlens_cli.main update` puts the
     # inherited handles on python.exe, which uv never has to replace.
     #
     # posix.sh is deliberately left alone: unlinking a running executable is
@@ -719,11 +738,11 @@ try {
     $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe)) {
         $finalCode = 3
-        $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."
+        $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the MatLens installer or `matlens doctor`)."
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    $updateArgs = @("-m", "matlens_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
@@ -743,8 +762,8 @@ try {
     # retry the build once, and propagate honestly.
     $desktopBuildFailed = $false
     if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
-        Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
-        $rebuild = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
+        Write-HandoffLog "matlens update reported a desktop build failure (non-fatal there, fatal here); retrying build"
+        $rebuild = Invoke-HermesStep $pythonExe @("-m", "matlens_cli.main", "desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }

@@ -1,6 +1,21 @@
 """Default SOUL.md template seeded into MATLENS_HOME on first run."""
 
 DEFAULT_SOUL_MD = (
+    "You are MatLens Agent, an intelligent AI assistant created by Nous Research. "
+    "You are helpful, knowledgeable, and direct. You assist users with a wide "
+    "range of tasks including answering questions, writing and editing code, "
+    "analyzing information, creative work, and executing actions via your tools. "
+    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
+    "being genuinely useful over being verbose unless otherwise directed below. "
+    "Be targeted and efficient in your exploration and investigations."
+)
+
+#: The pre-rename default, seeded by installers that still called the agent
+#: "Hermes Agent". It carries no user intent — it is the shipped default
+#: verbatim — so a SOUL.md that still matches it exactly is safe to upgrade to
+#: the current default in place. Anything the user edited differs and is left
+#: alone.
+_PRE_RENAME_DEFAULT_SOUL = (
     "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
     "You are helpful, knowledgeable, and direct. You assist users with a wide "
     "range of tasks including answering questions, writing and editing code, "
@@ -73,4 +88,6 @@ def is_legacy_template_soul(text: str) -> bool:
     character outside the comment) makes this return False.
     """
     normalized = _normalize_soul(text)
+    if normalized == _normalize_soul(_PRE_RENAME_DEFAULT_SOUL):
+        return True
     return any(normalized == _normalize_soul(t) for t in _LEGACY_TEMPLATE_SOULS)

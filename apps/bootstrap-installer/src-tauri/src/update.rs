@@ -7,7 +7,7 @@
 //!      venv shim and packaged app.asar are free; otherwise `hermes update`
 //!      or repair bootstrap can race locked files),
 //!   2. run `hermes update --yes --gateway` (Python/repo update; this does NOT
-//!      rebuild apps/desktop by design — see cmd_update in hermes_cli/main.py),
+//!      rebuild apps/desktop by design — see cmd_update in matlens_cli/main.py),
 //!   3. run `hermes desktop --build-only` (the rebuild step update skips),
 //!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
 //!
@@ -39,7 +39,7 @@ use crate::powershell::read_decoded_line;
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
-/// hermes_cli/main.py (sys.exit(2)). We surface a targeted message for this.
+/// matlens_cli/main.py (sys.exit(2)). We surface a targeted message for this.
 const UPDATE_EXIT_CONCURRENT: i32 = 2;
 
 /// How long to wait for the old desktop process to release files under the
@@ -109,7 +109,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 /// hard ceiling) and self-heal rather than wait forever.
 ///
 /// The marker is also the cross-process update lock: `hermes update` claims
-/// the same file (see `hermes_cli/update_lock.py`) so a dashboard-spawned
+/// the same file (see `matlens_cli/update_lock.py`) so a dashboard-spawned
 /// update and this updater can't mutate one checkout at the same time.
 /// `acquire` therefore REFUSES when a live foreign owner holds it rather than
 /// overwriting — the pre-fix clobber is what let a dashboard `hermes update`
@@ -273,7 +273,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // straggler-cleanup kills it, and the relaunch/kill cycle loops. The guard
     // removes the marker on every exit path (incl. early returns / panics).
     //
-    // The same marker is the cross-process update lock (hermes_cli/
+    // The same marker is the cross-process update lock (matlens_cli/
     // update_lock.py claims it too), so a live foreign owner means another
     // updater — most often a dashboard-spawned `hermes update` — is already
     // mutating this checkout. Refuse instead of running a second one over it.
@@ -715,7 +715,7 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
 }
 
 fn install_lock_probe_paths(install_root: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![venv_hermes(install_root)];
+    let mut paths = venv_shims(install_root);
     paths.extend(desktop_app_payload_paths(install_root));
     paths
 }
@@ -728,7 +728,12 @@ fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
             release.join("win-arm64-unpacked").join("resources").join("app.asar"),
         ]
     } else if cfg!(target_os = "macos") {
+        // Canonical bundle name is `MatLens.app`; a tree built before the
+        // rename ships `Hermes.app`. Probe both so the lock check still sees
+        // the running app after the product was renamed.
         vec![
+            release.join("mac").join("MatLens.app").join("Contents").join("Resources").join("app.asar"),
+            release.join("mac-arm64").join("MatLens.app").join("Contents").join("Resources").join("app.asar"),
             release.join("mac").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
             release.join("mac-arm64").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
         ]
@@ -876,30 +881,48 @@ struct CmdResult {
     exit_code: Option<i32>,
 }
 
-/// Path to the venv hermes shim under an install root, regardless of existence.
-fn venv_hermes(install_root: &Path) -> PathBuf {
-    if cfg!(target_os = "windows") {
-        install_root.join("venv").join("Scripts").join("hermes.exe")
+/// Paths to the venv CLI shims under an install root, canonical first.
+///
+/// The canonical console-script name is `matlens` (see pyproject.toml's
+/// `[project.scripts]`); a pre-rename tree still carries `hermes`. Both are
+/// probed so an updated install keeps working on a tree that was installed
+/// before the rename, and a legacy tree is not mistaken for a broken one.
+fn venv_shims(install_root: &Path) -> Vec<PathBuf> {
+    let bin = if cfg!(target_os = "windows") {
+        install_root.join("venv").join("Scripts")
     } else {
-        install_root.join("venv").join("bin").join("hermes")
-    }
+        install_root.join("venv").join("bin")
+    };
+    let names: &[&str] = if cfg!(target_os = "windows") {
+        &["matlens.exe", "hermes.exe"]
+    } else {
+        &["matlens", "hermes"]
+    };
+    names.iter().map(|name| bin.join(name)).collect()
 }
 
-/// Resolve the hermes CLI to drive. Prefer the venv shim in the install we
-/// just updated; fall back to `hermes` on PATH.
+/// Resolve the MatLens CLI to drive. Prefer the venv shim in the install we
+/// just updated; fall back to the PATH.
 fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
-    let shim = venv_hermes(install_root);
-    if shim.exists() {
-        return Some(shim);
+    for shim in venv_shims(install_root) {
+        if shim.exists() {
+            return Some(shim);
+        }
     }
     // PATH fallback. which-style probe via env, kept dependency-free.
-    let exe = if cfg!(target_os = "windows") { "hermes.exe" } else { "hermes" };
+    let exe_names: &[&str] = if cfg!(target_os = "windows") {
+        &["matlens.exe", "hermes.exe"]
+    } else {
+        &["matlens", "hermes"]
+    };
     if let Ok(path) = std::env::var("PATH") {
         let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
         for dir in path.split(sep) {
-            let cand = Path::new(dir).join(exe);
-            if cand.exists() {
-                return Some(cand);
+            for exe in exe_names {
+                let cand = Path::new(dir).join(exe);
+                if cand.exists() {
+                    return Some(cand);
+                }
             }
         }
     }
@@ -1245,11 +1268,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn venv_hermes_is_under_install_root() {
+    fn venv_shims_are_under_install_root() {
         let root = Path::new("/x/matlens-agent");
-        let shim = venv_hermes(root);
-        assert!(shim.starts_with(root));
-        assert!(shim.to_string_lossy().contains("venv"));
+        let shims = venv_shims(root);
+        assert!(!shims.is_empty());
+        for shim in &shims {
+            assert!(shim.starts_with(root));
+            assert!(shim.to_string_lossy().contains("venv"));
+        }
+    }
+
+    #[test]
+    fn venv_shims_cover_canonical_and_legacy_names() {
+        let shims = venv_shims(Path::new("/x/matlens-agent"));
+        let names: Vec<String> = shims
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("matlens")),
+            "canonical shim must be probed, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("hermes")),
+            "pre-rename shim must still be probed, got {names:?}"
+        );
     }
 
     #[test]
@@ -1304,8 +1347,12 @@ mod tests {
         let probes = install_lock_probe_paths(root);
 
         assert!(
-            probes.iter().any(|p| p == &venv_hermes(root)),
+            probes.iter().any(|p| p == &venv_shims(root)[0]),
             "venv shim remains part of the update lock probe"
+        );
+        assert!(
+            probes.iter().any(|p| p == &venv_shims(root)[1]),
+            "pre-rename venv shim must stay part of the update lock probe"
         );
         assert!(
             // Windows/Linux payloads live under `resources/`, the macOS bundle

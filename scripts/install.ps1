@@ -83,15 +83,15 @@ param(
 
     # --- Desktop GUI build (opt-in) ---
     # When set, install.ps1 includes Stage-Desktop in the manifest and
-    # builds apps/desktop into a launchable Hermes.exe.
+    # builds apps/desktop into a launchable MatLens.exe.
     #
     # Why opt-in:
-    #   * Hermes-Setup.exe (the signed Tauri bootstrap installer) passes
+    #   * MatLens-Setup.exe (the signed Tauri bootstrap installer) passes
     #     -IncludeDesktop so a user who installed via the GUI ends up
     #     with a launchable desktop binary.
     #   * The Electron desktop's own bootstrap-runner.ts runs install.ps1
-    #     from inside an already-launched Hermes.exe; if THAT recursively
-    #     built apps/desktop it would try to overwrite the live Hermes.exe
+    #     from inside an already-launched MatLens.exe; if THAT recursively
+    #     built apps/desktop it would try to overwrite the live MatLens.exe
     #     on disk and fail. The recursive path omits the flag.
     #   * The canonical CLI one-liner (irm | iex) omits the flag too;
     #     terminal users don't need a desktop binary built for them, and
@@ -767,7 +767,7 @@ function Get-PowerShellHostExe {
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
-    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
+    # The runtime update path (matlens_cli/managed_uv.py) looks in the same
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
@@ -824,7 +824,7 @@ function Install-Uv {
         # on PATH, or at ~/.local/bin (the astral default location when
         # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
         # the managed location so the managed-first invariant holds
-        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        # (matlens_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
         if (-not (Test-Path $managedUv)) {
             $existingUv = $null
             $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
@@ -967,7 +967,7 @@ function Get-NpmRange {
 #
 # Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
 # scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
-# hermes_cli/npm_engine.py:
+# matlens_cli/npm_engine.py:
 #   - a temp cwd, so the checkout's own .npmrc (engine-strict,
 #     min-release-age) does not gate the very upgrade meant to satisfy it;
 #   - npm_config_min_release_age=0, which also neutralises a user ~/.npmrc;
@@ -1120,7 +1120,7 @@ function Resolve-AvailablePythonVersion {
     # when none are available.
     #
     # This is the cross-process-safe counterpart to Test-Python's in-memory
-    # ``$script:PythonVersion = $fallbackVer`` mutation.  Under Hermes-Setup.exe
+    # ``$script:PythonVersion = $fallbackVer`` mutation.  Under MatLens-Setup.exe
     # each ``-Stage NAME`` runs in a *fresh* powershell.exe, so the fallback the
     # ``python`` stage settled on (e.g. 3.12 when 3.11 is absent) does NOT
     # survive into the ``venv`` stage's process -- there $PythonVersion is back
@@ -2446,7 +2446,7 @@ function Install-Venv {
         return
     }
 
-    # Re-resolve the interpreter before creating the venv.  Under Hermes-Setup.exe
+    # Re-resolve the interpreter before creating the venv.  Under MatLens-Setup.exe
     # each stage runs in its own powershell.exe, so the fallback the `python`
     # stage picked (e.g. 3.12 when 3.11 is absent) did NOT propagate into this
     # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
@@ -2507,11 +2507,14 @@ function Install-Venv {
             } catch {
                 Write-Warn "Could not enumerate gateway scheduled tasks: $($_.Exception.Message)"
             }
-            # The launcher CLI (hermes.exe) plus its child tree.
+            # The launcher CLI (matlens.exe) plus its child tree. Pre-rename
+            # trees still run `hermes.exe`; kill both image names so an
+            # upgraded install can still reclaim a locked venv.
+            & taskkill /F /T /IM matlens.exe /FI "PID ne $myPid" 2>$null | Out-Null
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
-            # taskkill /IM hermes.exe is NOT enough: the gateway/agent that a
+            # taskkill /IM matlens.exe is NOT enough: the gateway/agent that a
             # scheduled task or watchdog autostarts runs as
-            # `pythonw.exe -m hermes_cli.main gateway run` straight out of
+            # `pythonw.exe -m matlens_cli.main gateway run` straight out of
             # venv\Scripts\, so its image name is python/pythonw, not hermes.exe.
             # That process holds the venv's .pyd files open and re-triggers the
             # access-denied failure. Select only roots whose executable lives
@@ -2522,7 +2525,7 @@ function Install-Venv {
             # outside this venv untouched.
             #
             # The gateway autostart task registers with /RL LIMITED as the current
-            # user (see hermes_cli/gateway_windows.py), so the installer always
+            # user (see matlens_cli/gateway_windows.py), so the installer always
             # runs at equal-or-higher integrity and can read its executable path.
             # Get-CimInstance is used over Get-Process because it returns a null
             # ExecutablePath for a process it cannot inspect (a different session)
@@ -2959,7 +2962,7 @@ print(','.join(scripts))
                     }
                     if ($stillMissing.Count -gt 0) {
                         Write-Warn "Entry points still missing after repair: $($stillMissing -join ', ')"
-                        Write-Info "Workaround: `"$pythonExe`" -m hermes_cli.main <command>"
+                        Write-Info "Workaround: `"$pythonExe`" -m matlens_cli.main <command>"
                     } else {
                         Write-Success "Console entry points restored"
                     }
@@ -2988,22 +2991,22 @@ print(','.join(scripts))
             if ($LASTEXITCODE -eq 0) { $webOk = $true }
         } catch { }
         try {
-            & $pythonExe -m py_compile "$InstallDir\hermes_cli\web_server.py" 2>&1 | Out-Null
+            & $pythonExe -m py_compile "$InstallDir\matlens_cli\web_server.py" 2>&1 | Out-Null
             if ($LASTEXITCODE -eq 0) { $webServerSyntaxOk = $true }
         } catch { }
         $ErrorActionPreference = $prevEAP
         if (-not $webOk) {
-            Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
+            Write-Warn "fastapi/uvicorn not importable -- `matlens dashboard` will not work."
             Write-Info "Attempting targeted install of [web] extra as last resort..."
             & $UvCmd pip install -e ".[web]"
             if ($LASTEXITCODE -eq 0) {
-                Write-Success "[web] extra installed; `hermes dashboard` should now work."
+                Write-Success "[web] extra installed; `matlens dashboard` should now work."
             } else {
                 Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
             }
         }
         if (-not $webServerSyntaxOk) {
-            throw "dashboard backend source failed syntax check: hermes_cli/web_server.py"
+            throw "dashboard backend source failed syntax check: matlens_cli/web_server.py"
         }
     }
     
@@ -3013,7 +3016,7 @@ print(','.join(scripts))
 }
 
 function Set-PathVariable {
-    Write-Info "Setting up hermes command..."
+    Write-Info "Setting up matlens command..."
     
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
@@ -3029,7 +3032,11 @@ function Set-PathVariable {
         # path, so they work from any location and survive updates.)
         $hermesBin = "$InstallDir\bin"
         New-Item -ItemType Directory -Force -Path $hermesBin | Out-Null
-        foreach ($launcher in @("hermes.exe", "hermes-acp.exe")) {
+        # Canonical launchers come from pyproject.toml's [project.scripts]:
+        # `matlens`, `matlens-agent`, `matlens-acp`. Pre-rename installs shipped
+        # `hermes.exe` / `hermes-acp.exe` instead — copy those too so an
+        # upgraded tree keeps the old command names working.
+        foreach ($launcher in @("matlens.exe", "matlens-agent.exe", "matlens-acp.exe", "hermes.exe", "hermes-acp.exe")) {
             $src = "$InstallDir\venv\Scripts\$launcher"
             if (Test-Path $src) {
                 Copy-Item -Force $src "$hermesBin\$launcher"
@@ -3046,7 +3053,7 @@ function Set-PathVariable {
         $cleaned = ($currentPath -split ';' | Where-Object { $_ -and $_ -ne $legacyBin }) -join ';'
         [Environment]::SetEnvironmentVariable("Path", $cleaned, "User")
         $currentPath = $cleaned
-        Write-Info "Removed legacy venv\Scripts from user PATH (kept hermes via $hermesBin)"
+        Write-Info "Removed legacy venv\Scripts from user PATH (kept matlens via $hermesBin)"
     }
     
     if ($currentPath -notlike "*$hermesBin*") {
@@ -3076,7 +3083,7 @@ function Set-PathVariable {
     # Update current session
     $env:Path = "$hermesBin;$env:Path"
     
-    Write-Success "hermes command ready"
+    Write-Success "matlens command ready"
 }
 
 function Write-BootstrapMarker {
@@ -3213,11 +3220,11 @@ function Copy-ConfigTemplates {
     # PowerShell version.
     $soulPath = "$HermesHome\SOUL.md"
     if (-not (Test-Path $soulPath)) {
-        # MUST match DEFAULT_SOUL_MD in hermes_cli/default_soul.py. The runtime
+        # MUST match DEFAULT_SOUL_MD in matlens_cli/default_soul.py. The runtime
         # upgrades the old comment-only scaffold to this text on next run, so
         # drift is self-healing, but keep them in sync to avoid first-run churn.
         $soulContent = @"
-You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
+You are MatLens Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
@@ -3263,7 +3270,7 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
 
 function Install-NodeDeps {
     if (-not $HasNode) {
-        # Cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME
+        # Cross-process driver mode (MatLens-Setup.exe runs each -Stage NAME
         # in a fresh powershell.exe) means $script:HasNode set by Stage-Node
         # in the previous process isn't visible here. Re-probe rather than
         # trust the stale global -- Stage-Node already ran successfully or
@@ -3293,7 +3300,7 @@ function Install-NodeDeps {
     $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npmCmd) {
         Write-Warn "npm not found on PATH -- skipping Node.js dependencies."
-        Write-Info "Open a new PowerShell window and re-run 'hermes setup tools' later."
+        Write-Info "Open a new PowerShell window and re-run 'matlens setup tools' later."
         return
     }
     $npmExe = $npmCmd.Source
@@ -3583,7 +3590,7 @@ function Install-BrowserUseCli {
             Write-Success "Browser Use CLI installed"
         } else {
             Write-Warn "Browser Use CLI install failed (exit $LASTEXITCODE) -- browser automation falls back to built-in tools."
-            Write-Info "Install later with: uv tool install browser-use  (or via 'hermes tools')"
+            Write-Info "Install later with: uv tool install browser-use  (or via 'matlens tools')"
         }
     } catch {
         Write-Warn "Browser Use CLI install failed: $_"
@@ -3598,7 +3605,7 @@ function Install-BrowserUseCli {
 # Provision it at install time so enabling the tool later -- via `hermes
 # tools`, the dashboard, or the desktop app -- is a config flip, not a
 # surprise multi-minute binary fetch. Best-effort and non-fatal: the enable
-# paths still lazy-install via install_cua_driver() (hermes_cli/tools_config)
+# paths still lazy-install via install_cua_driver() (matlens_cli/tools_config)
 # when this step was skipped or failed.
 function Install-CuaDriver {
     if ($SkipComputerUse) {
@@ -3628,17 +3635,17 @@ function Install-CuaDriver {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
             } else {
                 Write-Warn "Computer Use driver install did not complete -- it will install on demand when you enable the tool."
-                Write-Info "Install later with: hermes computer-use install"
+                Write-Info "Install later with: matlens computer-use install"
             }
         } else {
             Stop-Job $job -ErrorAction SilentlyContinue
             Remove-Job $job -Force -ErrorAction SilentlyContinue
             Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
-            Write-Info "Install later with: hermes computer-use install"
+            Write-Info "Install later with: matlens computer-use install"
         }
     } catch {
         Write-Warn "Computer Use driver install failed: $_"
-        Write-Info "Install later with: hermes computer-use install"
+        Write-Info "Install later with: matlens computer-use install"
     } finally {
         $ErrorActionPreference = $prevEAP
     }
@@ -3791,7 +3798,7 @@ function Install-DesktopVoiceDeps {
 }
 
 function Install-Desktop {
-    # Build apps/desktop into a launchable Hermes.exe. Only called from
+    # Build apps/desktop into a launchable MatLens.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
     # -IncludeDesktop was passed to install.ps1.
     #
@@ -3804,7 +3811,7 @@ function Install-Desktop {
     # produces the unpacked binary at apps/desktop/release/<os>-unpacked/.
     #
     # The Tauri bootstrap installer's launch_hermes_desktop command
-    # resolves apps/desktop/release/win-unpacked/Hermes.exe directly,
+    # resolves apps/desktop/release/win-unpacked/MatLens.exe directly,
     # so an "unpacked" build (electron-builder --dir) is enough -- we
     # don't need to produce an NSIS/MSI artifact here.
 
@@ -3909,7 +3916,7 @@ function Install-Desktop {
     # 2. Build apps/desktop. `npm run pack` runs:
     #      assert-root-install + write-build-stamp + stage-native-deps +
     #      tsc -b + vite build + electron-builder --dir
-    # The --dir mode produces an unpacked Hermes.exe in
+    # The --dir mode produces an unpacked MatLens.exe in
     # apps/desktop/release/win-unpacked/ without bundling NSIS/MSI;
     # we don't need a distributable installer artifact, just a
     # launchable binary the Tauri installer can spawn.
@@ -3920,7 +3927,7 @@ function Install-Desktop {
     # invokes signtool and therefore never fetches/extracts winCodeSign
     # (whose macOS symlinks crash 7-Zip on non-admin Windows -- a dead end we
     # are NOT trying to work around). The Hermes icon + product name are
-    # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
+    # stamped onto MatLens.exe by our own rcedit step (Set-DesktopExeIdentity)
     # AFTER this build, completely decoupled from electron-builder signing.
     #
     # WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD explicitly cleared as
@@ -4039,7 +4046,13 @@ function Install-Desktop {
 
     # 3. Sanity-check the produced binary. Probe both arches so this works
     # on x64 and arm64 build machines.
+    #
+    # Canonical product name is `MatLens.exe`; a tree built before the rename
+    # ships `Hermes.exe`. Probe both — the canonical one first — so a build
+    # produced by either naming is accepted.
     $exeCandidates = @(
+        "$desktopDir\release\win-unpacked\MatLens.exe",
+        "$desktopDir\release\win-arm64-unpacked\MatLens.exe",
         "$desktopDir\release\win-unpacked\Hermes.exe",
         "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
     )
@@ -4054,10 +4067,10 @@ function Install-Desktop {
         }
     }
     if (-not $found) {
-        throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
+        throw "Desktop build completed but no MatLens.exe was found under $desktopDir\release\*-unpacked\"
     }
 
-    # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
+    # 3b. The MatLens icon + identity are stamped onto the exe by the
     #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.mjs)
     #     during `npm run pack` above -- for every build, so the installer's
     #     --update rebuild stays branded too. No separate stamp step needed here.
@@ -4083,7 +4096,7 @@ function Install-Desktop {
     }
 
     # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
-    #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
+    #    MatLens.exe. We deliberately do NOT point them at `matlens desktop`: that
     #    command rebuilds (npm install + electron-builder) on every launch,
     #    which would cost minutes each time. The packed exe is the consumer --
     #    launching it directly is instant, and updates flow through the
@@ -4271,7 +4284,7 @@ function Invoke-SetupWizard {
         # The setup wizard prompts for API keys, model choice, persona, etc.
         # Non-interactive callers (GUI installer) own that UX themselves; let
         # them drive it after install.ps1 returns.
-        Write-Info "Skipping setup wizard (non-interactive). Configure via the GUI or 'hermes setup'."
+        Write-Info "Skipping setup wizard (non-interactive). Configure via the GUI or 'matlens setup'."
         return
     }
 
@@ -4283,9 +4296,9 @@ function Invoke-SetupWizard {
 
     # Run hermes setup using the venv Python directly (no activation needed)
     if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+        & ".\venv\Scripts\python.exe" -m matlens_cli.main setup
     } else {
-        python -m hermes_cli.main setup
+        python -m matlens_cli.main setup
     }
 
     Pop-Location
@@ -4304,9 +4317,15 @@ function Start-GatewayIfConfigured {
 
     if (-not $hasMessaging) { return }
 
-    $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+    # Canonical CLI entry is `matlens` (pyproject's [project.scripts]); a
+    # pre-rename tree still carries `hermes`. Probe canonical first, then the
+    # legacy name, then fall back to whatever is on PATH.
+    $hermesCmd = "$InstallDir\venv\Scripts\matlens.exe"
     if (-not (Test-Path $hermesCmd)) {
-        $hermesCmd = "hermes"
+        $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+    }
+    if (-not (Test-Path $hermesCmd)) {
+        $hermesCmd = "matlens"
     }
 
     # If WhatsApp is enabled but not yet paired, run foreground for QR scan
@@ -4315,7 +4334,7 @@ function Start-GatewayIfConfigured {
     if ($whatsappEnabled -and -not (Test-Path $whatsappSession)) {
         Write-Host ""
         Write-Info "WhatsApp is enabled but not yet paired."
-        Write-Info "Running 'hermes whatsapp' to pair via QR code..."
+        Write-Info "Running 'matlens whatsapp' to pair via QR code..."
         Write-Host ""
         # Non-interactive callers (GUI installer, CI) skip the QR-pair prompt;
         # WhatsApp pairing requires a human looking at a phone camera, so the
@@ -4344,7 +4363,7 @@ function Start-GatewayIfConfigured {
     # services on the build agent, etc.).  Treat it like the user declined.
     if ($NonInteractive) {
         Write-Info "Skipping gateway autostart prompt (non-interactive)."
-        Write-Info "Start the gateway later with: hermes gateway"
+        Write-Info "Start the gateway later with: matlens gateway"
         return
     }
 
@@ -4362,10 +4381,10 @@ function Start-GatewayIfConfigured {
             Write-Info "Logs: $logFile"
             Write-Info "To stop: close the gateway process from Task Manager"
         } catch {
-            Write-Warn "Failed to start gateway. Run manually: hermes gateway"
+            Write-Warn "Failed to start gateway. Run manually: matlens gateway"
         }
     } else {
-        Write-Info "Skipped. Start the gateway later with: hermes gateway"
+        Write-Info "Skipped. Start the gateway later with: matlens gateway"
     }
 }
 
@@ -4393,17 +4412,17 @@ function Write-Completion {
     Write-Host ""
     Write-Host "* Commands:" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "   hermes              " -NoNewline -ForegroundColor Green
+    Write-Host "   matlens             " -NoNewline -ForegroundColor Green
     Write-Host "Start chatting"
-    Write-Host "   hermes setup        " -NoNewline -ForegroundColor Green
+    Write-Host "   matlens setup        " -NoNewline -ForegroundColor Green
     Write-Host "Configure API keys & settings"
-    Write-Host "   hermes config       " -NoNewline -ForegroundColor Green
+    Write-Host "   matlens config       " -NoNewline -ForegroundColor Green
     Write-Host "View/edit configuration"
-    Write-Host "   hermes config edit  " -NoNewline -ForegroundColor Green
+    Write-Host "   matlens config edit  " -NoNewline -ForegroundColor Green
     Write-Host "Open config in editor"
-    Write-Host "   hermes gateway      " -NoNewline -ForegroundColor Green
+    Write-Host "   matlens gateway      " -NoNewline -ForegroundColor Green
     Write-Host "Start messaging gateway (Telegram, Discord, etc.)"
-    Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
+    Write-Host "   matlens update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""
     
@@ -4513,7 +4532,7 @@ $InstallStages = @(
 if ($IncludeDesktop) {
     # Insert AFTER node-deps so workspace npm is already installed when
     # the desktop build runs. Inserted only when explicitly requested
-    # (Hermes-Setup.exe), never via the irm|iex CLI one-liner.
+    # (MatLens-Setup.exe), never via the irm|iex CLI one-liner.
     $InstallStages += @{ Name = "desktop"; Title = "Building desktop app"; Category = "install"; NeedsUserInput = $false; Worker = "Stage-Desktop" }
 }
 $InstallStages += @(

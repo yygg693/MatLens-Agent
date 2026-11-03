@@ -826,7 +826,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.MATLENS_DESKTOP_APP_NAME || 'Hermes'
+const APP_NAME = process.env.MATLENS_DESKTOP_APP_NAME || 'MatLens'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1130,12 +1130,12 @@ app.setName(APP_NAME)
 // Windows toast notifications silently no-op unless an AppUserModelID is set:
 // `new Notification().show()` returns without error and nothing appears. The
 // AUMID must match the installed Start Menu shortcut's AUMID, which
-// electron-builder derives from the build `appId` (com.nousresearch.hermes) —
+// electron-builder derives from the build `appId` (com.matlens.agent) —
 // keep this string in sync with package.json `build.appId`. macOS/Linux don't
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId('com.matlens.agent')
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -1289,7 +1289,7 @@ let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
-  message: 'Waiting to start Hermes backend',
+  message: 'Waiting to start MatLens backend',
   phase: 'idle',
   progress: 0,
   running: false,
@@ -1954,7 +1954,7 @@ async function waitForUpdateToFinish() {
 
       await advanceBootProgress(
         'backend.update-wait',
-        'An update is finishing — Hermes will start automatically when it completes…',
+        'An update is finishing — MatLens will start automatically when it completes…',
         12
       )
     },
@@ -1978,7 +1978,7 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
       dialog.showMessageBox({
         type: 'warning',
-        title: 'Hermes update',
+        title: 'MatLens update',
         message: 'The update finished, but needs one more step',
         detail: result.message
       })
@@ -1987,7 +1987,7 @@ async function waitForUpdateToFinish() {
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
       dialog.showErrorBox(
-        'Hermes update did not finish',
+        'MatLens update did not finish',
         `${result.message}\n\nDetails: ${path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')}`
       )
     }
@@ -2443,8 +2443,12 @@ function resolveGitBinary() {
   const candidates = []
 
   if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
+    // Canonical home root first, then the pre-rename one. Both spellings can
+    // be present on a machine that was upgraded from a pre-rename install.
+    for (const rootName of ['matlens', 'hermes']) {
+      candidates.push(path.join(localAppData, rootName, 'git', 'cmd', 'git.exe'))
+      candidates.push(path.join(localAppData, rootName, 'git', 'bin', 'git.exe'))
+    }
   }
 
   candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
@@ -2947,13 +2951,20 @@ function repairMacUpdaterHelper(updater) {
   }
 }
 
-// Path to the venv shim whose lock decides whether `hermes update` can write
-// fresh entry points. On Windows this is the file the running backend
-// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
-function venvHermesShimPath(updateRoot) {
+// Paths to the venv shims whose lock decides whether `matlens update` can
+// write fresh entry points. On Windows this is the file the running backend
+// holds open; on POSIX it's never mandatory-locked.
+//
+// Canonical name is `matlens` (pyproject's [project.scripts]); a pre-rename
+// tree still carries `hermes`. BOTH are probed — probing only the canonical
+// name would silently skip the guard on a legacy tree, and probing only the
+// legacy name would skip it on every current install.
+function venvShimPaths(updateRoot) {
+  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+
   return IS_WINDOWS
-    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
-    : path.join(updateRoot, 'venv', 'bin', 'hermes')
+    ? [path.join(venvBin, 'matlens.exe'), path.join(venvBin, 'hermes.exe')]
+    : [path.join(venvBin, 'matlens'), path.join(venvBin, 'hermes')]
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -3320,11 +3331,14 @@ async function releaseBackendLock(updateRoot, tag) {
     stopAllPoolBackends
   })
 
-  const shim = venvHermesShimPath(updateRoot)
+  // Probe EVERY shim that exists: the lock guard is only meaningful if it
+  // covers the file that is actually held open. A tree carrying both names
+  // must see both unlocked.
+  const shims = venvShimPaths(updateRoot).filter((candidate) => fileExists(candidate))
   const deadlineMs = Date.now() + 15000
 
   while (Date.now() < deadlineMs) {
-    if (!isShimLocked(shim)) {
+    if (shims.every((shim) => !isShimLocked(shim))) {
       rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
 
       return { unlocked: true }
@@ -3372,7 +3386,7 @@ async function releaseBackendLock(updateRoot, tag) {
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
 // itself (the old open-coded git dance lived here and drifted from
-// `hermes update`). Instead we spawn the staged Hermes-Setup binary with
+// `matlens update`). Instead we spawn the staged MatLens-Setup binary with
 // --update and quit, so it can run `hermes update` (which refuses while we
 // hold the venv shim) and rebuild the desktop with our exe already gone.
 //
@@ -3461,7 +3475,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     emitUpdateProgress({
       stage: 'restart',
       message:
-        'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+        'Updating MatLens — this window will close and the updater will open. Don’t reopen MatLens yourself; it restarts automatically when the update finishes.',
       percent: 100
     })
     repairMacUpdaterHelper(updater)
@@ -3496,7 +3510,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // user close the holder and retry. Restart our own backend so the app
       // keeps working after the failed attempt.
       const message =
-        'Update aborted: another process is holding the Hermes install open ' +
+        'Update aborted: another process is holding the MatLens install open ' +
         '(a second Hermes window or a terminal running hermes?). Close it and retry.'
 
       emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -3731,18 +3745,21 @@ async function handOffWindowsBootstrapRecovery(reason) {
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
   const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-  const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
+  // Canonical console-script shim is `matlens` (pyproject's [project.scripts]);
+  // a pre-rename tree still carries `hermes`. Either one counts as a real
+  // install signal.
+  const venvShimNames = IS_WINDOWS ? ['matlens.exe', 'hermes.exe'] : ['matlens', 'hermes']
   const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
 
   // Choose the gentle in-place --update when ANY real-install signal is present,
-  // not just the `hermes.exe` console-script shim. That shim is generated at the
+  // not just the console-script shim. That shim is generated at the
   // END of venv setup and is absent in exactly the interrupted/quarantined states
   // this recovery exists to heal — gating on it alone forced the destructive
   // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
   // and the bootstrap-complete marker are present earlier and are better signals.
   const haveRealInstall =
     fileExists(venvPython) ||
-    fileExists(venvHermes) ||
+    venvShimNames.some((name) => fileExists(path.join(venvBin, name))) ||
     fileExists(path.join(updateRoot, '.matlens-bootstrap-complete')) ||
     fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
 
@@ -4000,7 +4017,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   emitUpdateProgress({
     stage: 'restart',
     message:
-      'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+      'Updating MatLens — this window will close. Don’t reopen MatLens yourself; it restarts automatically when the update finishes.',
     percent: 100
   })
 
@@ -4201,7 +4218,7 @@ function isPackagedInstallPath(dir) {
 
 function resolveHermesCwd() {
   // In a packaged build, `process.cwd()` resolves to the install root (e.g.
-  // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
+  // `…/win-unpacked` on Windows or `/Applications/MatLens.app/Contents/...`
   // on macOS). Sessions spawned there leave files inside the app bundle
   // and bewilder users when "where did my files go?" is the install dir.
   // The user-configurable default project directory wins over everything,
@@ -4414,15 +4431,18 @@ function resolveHermesBackend(backendArgs) {
       } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
         hermesCommand = hermesOverride
       } else {
-        rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
+        rememberLog(`Ignoring Windows MatLens override under WSL: ${hermesOverride}`)
       }
     } else {
-      hermesCommand = findOnPath('hermes')
+      // Canonical command name is `matlens`; a pre-rename install still
+      // exposes `hermes` on PATH. Probe canonical first so a system that has
+      // BOTH resolves to the current one.
+      hermesCommand = findOnPath('matlens') || findOnPath('hermes')
     }
 
     if (hermesCommand) {
       if (looksLikeDesktopAppBinary(hermesCommand)) {
-        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
+        rememberLog(`Ignoring desktop app executable on PATH while resolving MatLens CLI: ${hermesCommand}`)
         hermesCommand = null
       }
     }
@@ -4511,7 +4531,7 @@ function resolveHermesBackend(backendArgs) {
   //    is a recoverable state the GUI can drive through.
   return {
     kind: 'bootstrap-needed',
-    label: 'Hermes Agent not installed yet; bootstrap required',
+    label: 'MatLens Agent not installed yet; bootstrap required',
     command: null,
     args: backendArgs,
     bootstrap: true,
@@ -4546,7 +4566,7 @@ async function ensureRuntime(backend) {
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
       const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
-        'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
+        'MatLens recovery was handed off to MatLens Setup. The desktop will restart when recovery completes.'
       )
 
       handoffError.isBootstrapFailure = true
@@ -4608,7 +4628,7 @@ async function ensureRuntime(backend) {
     bootstrapAbortController = null
 
     if (bootstrapResult.cancelled) {
-      const cancelledError = new Error('Hermes install was cancelled.') as any
+      const cancelledError = new Error('MatLens install was cancelled.') as any
       cancelledError.isBootstrapFailure = true
       cancelledError.bootstrapCancelled = true
       bootstrapFailure = cancelledError
@@ -4659,10 +4679,10 @@ async function ensureRuntime(backend) {
   // here via an external `hermes` on PATH, this check still helps.
   if (IS_WINDOWS && !findGitBash()) {
     throw new Error(
-      'Git for Windows is required for Hermes on Windows (provides Git Bash, ' +
+      'Git for Windows is required for MatLens on Windows (provides Git Bash, ' +
         "which the agent's terminal tool uses). Install it from " +
         'https://git-scm.com/download/win or run `winget install -e --id Git.Git`, ' +
-        'then relaunch Hermes.'
+        'then relaunch MatLens.'
     )
   }
 
@@ -4685,7 +4705,7 @@ async function ensureRuntime(backend) {
   backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
   updateBootProgress({
     phase: 'runtime.ready',
-    message: 'Hermes runtime is ready',
+    message: 'MatLens runtime is ready',
     progress: 82,
     running: true,
     error: null
@@ -4782,7 +4802,7 @@ function fetchJson(url, token, options: any = {}) {
             reject(
               new Error(
                 `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
-                  'The endpoint is likely missing on the Hermes backend.'
+                  'The endpoint is likely missing on the MatLens backend.'
               )
             )
 
@@ -4931,7 +4951,7 @@ function fetchPublicJson(url, options: any = {}) {
             reject(
               new Error(
                 `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
-                  'The endpoint is likely missing on the Hermes backend.'
+                  'The endpoint is likely missing on the MatLens backend.'
               )
             )
 
@@ -6665,7 +6685,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
+        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to MatLens gateway',
         autoHideMenuBar: true,
         // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
         // well under a second, so the window normally never needs to show. We
@@ -8466,7 +8486,7 @@ async function buildRemoteConnection(
       oauthGuardMayHardFail(await gatewayAuthProviders(baseUrl))
     ) {
       const err = new Error(
-        'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+        'Remote MatLens gateway uses OAuth, but you are not signed in. ' +
           'Open Settings → Gateway and click "Sign in", or switch back to Local.'
       ) as any
 
@@ -8482,7 +8502,7 @@ async function buildRemoteConnection(
       throw gatewayTicketFailure(
         error,
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
-        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+        'Could not reach the remote MatLens gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     }
 
@@ -8502,7 +8522,7 @@ async function buildRemoteConnection(
 
   if (!token) {
     throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
+      'Remote MatLens gateway is selected, but no session token is saved. ' +
         'Open Settings → Gateway and save a token, or switch back to Local.'
     )
   }
@@ -9072,7 +9092,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
             return {
               reachable: false,
               sshError: 'update-required',
-              error: 'Update Hermes on the remote host before connecting with Desktop SSH.'
+              error: 'Update MatLens on the remote host before connecting with Desktop SSH.'
             }
           }
 
@@ -9854,7 +9874,7 @@ async function startHermes() {
   // otherwise SIGTERMs the running instance's live backend (#87295).
   if (!isPrimaryInstance) {
     rememberLog('[boot] non-primary instance: skipping backend machinery')
-    throw new Error('Hermes Desktop is already running in another window.')
+    throw new Error('MatLens Desktop is already running in another window.')
   }
 
   await reapOrphanedBackendsOnce()
@@ -10318,7 +10338,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     height: SESSION_WINDOW_MIN_HEIGHT,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'MatLens',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -10418,7 +10438,7 @@ function createInstanceWindow() {
     ...nextInstanceBounds(),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'MatLens',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -11273,7 +11293,7 @@ function createWindow() {
     ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'MatLens',
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -12768,7 +12788,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
 
   const notification = new Notification({
-    title: payload?.title || 'Hermes',
+    title: payload?.title || 'MatLens',
     body: payload?.body || '',
     silent: Boolean(payload?.silent),
     actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))

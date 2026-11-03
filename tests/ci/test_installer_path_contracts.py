@@ -429,3 +429,201 @@ class TestLegacyHomeResolutionAgreement:
         assert electron_canonical != -1, (
             "the desktop must prefer the canonical home over the legacy root"
         )
+
+
+# ---------------------------------------------------------------------------
+# The CLI entry-point name.
+#
+# The break this section prevents, found in the batch-1 rename audit:
+#
+# ``pyproject.toml`` declares the console scripts as ``matlens`` /
+# ``matlens-agent`` / ``matlens-acp``.  Nothing ever produced a ``hermes``
+# or ``hermes.exe``.  Four components nevertheless looked for the name that
+# does not exist:
+#
+# * ``scripts/install.ps1`` copied ``hermes.exe`` / ``hermes-acp.exe`` out of
+#   the venv into the PATH directory — neither file exists, so the copy loop
+#   silently copied nothing and the machine ended up with **no ``matlens``
+#   command on PATH at all**.
+# * ``scripts/install.ps1`` ran ``python -m hermes_cli.main setup`` — there is
+#   no ``hermes_cli`` package (it is ``matlens_cli``), so the setup wizard
+#   died with ModuleNotFoundError.
+# * ``scripts/install.ps1`` ran ``py_compile`` on
+#   ``$InstallDir/hermes_cli/web_server.py`` — a path that does not exist, so
+#   the syntax check failed and the script **threw, aborting the install**.
+# * ``scripts/desktop-update/windows.ps1`` drove the update through
+#   ``python -m hermes_cli.main update`` — same missing module, so the whole
+#   desktop update path failed.
+#
+# None of these fail at compile time. They fail on a user's machine, mid-
+# install. This section pins the entry-point name to the one spelling that
+# actually exists, and pins the legacy fallback where one is still needed.
+# ---------------------------------------------------------------------------
+
+#: The console script declared in pyproject.toml's ``[project.scripts]``.
+CANONICAL_CLI_ENTRY = "matlens"
+
+#: The Python module that actually implements the CLI.
+CANONICAL_CLI_MODULE = "matlens_cli.main"
+
+
+class TestCliEntryPointName:
+    """Every component must invoke the CLI that actually exists."""
+
+    def test_pyproject_declares_the_canonical_entry_point(self) -> None:
+        source = _read(REPO_ROOT / "pyproject.toml")
+        assert f'{CANONICAL_CLI_ENTRY} = "{CANONICAL_CLI_MODULE}:main"' in source
+
+    def test_the_legacy_module_package_does_not_exist(self) -> None:
+        # Guards the premise of every check below: if a `hermes_cli` package
+        # ever comes back, these assertions would be pinning the wrong name.
+        assert not (REPO_ROOT / "hermes_cli").exists()
+
+    def test_install_ps1_does_not_invoke_the_missing_module(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "hermes_cli.main" not in source
+        assert f'-m {CANONICAL_CLI_MODULE}' in source
+
+    def test_install_ps1_compiles_the_real_web_server_path(self) -> None:
+        # The syntax check aborted the whole install when it targeted a path
+        # that does not exist.
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "hermes_cli/web_server.py" not in source
+        assert "matlens_cli/web_server.py" in source
+
+    def test_install_ps1_copies_the_launchers_that_exist(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        launcher_block = source.split("foreach ($launcher in", 1)[1].split(")", 1)[0]
+        assert f'"{CANONICAL_CLI_ENTRY}.exe"' in launcher_block
+
+    def test_desktop_update_script_does_not_invoke_the_missing_module(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1")
+        assert "hermes_cli.main" not in source
+        assert f'"{CANONICAL_CLI_MODULE}"' in source
+
+    def test_posix_update_script_does_not_invoke_the_missing_module(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "desktop-update" / "posix.sh")
+        assert "hermes_cli.main" not in source
+
+    def test_install_sh_does_not_invoke_the_missing_module(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.sh")
+        assert "hermes_cli.main" not in source
+        assert f'-m {CANONICAL_CLI_MODULE}' in source
+
+
+class TestVenvShimProbing:
+    """The update-lock probe must cover the shim that actually exists.
+
+    The venv shim is the file a running backend holds open on Windows. The
+    lock guard is meaningless unless it probes the file that is really there.
+    """
+
+    def test_desktop_probes_the_canonical_shim(self) -> None:
+        source = _desktop("main.ts")
+        assert "'matlens.exe'" in source
+        assert "'hermes.exe'" in source
+
+    def test_desktop_no_longer_probes_only_the_legacy_shim(self) -> None:
+        source = _desktop("main.ts")
+        assert "venvHermesShimPath" not in source
+
+    def test_rust_probes_both_shim_names(self) -> None:
+        source = _rust("update.rs")
+        assert '"matlens.exe"' in source
+        assert '"hermes.exe"' in source
+        assert "venv_hermes" not in source
+
+    def test_windows_update_script_probes_both_shim_names(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1")
+        assert "matlens.exe" in source
+        assert "hermes.exe" in source
+
+
+class TestProductIdentity:
+    """The packaged app carries the MatLens name; legacy artefacts still resolve.
+
+    The product was renamed from Hermes to MatLens. The packaged executable
+    is now ``MatLens.exe`` / ``MatLens.app``, but the updater must still find
+    a tree that was built before the rename — otherwise an in-place update
+    cannot locate the bundle it is supposed to replace.
+    """
+
+    def test_package_json_uses_the_canonical_product_name(self) -> None:
+        source = _read(REPO_ROOT / "apps" / "desktop" / "package.json")
+        assert '"productName": "MatLens"' in source
+        assert '"executableName": "MatLens"' in source
+
+    def test_package_json_app_id_is_canonical(self) -> None:
+        source = _read(REPO_ROOT / "apps" / "desktop" / "package.json")
+        assert '"appId": "com.matlens.agent"' in source
+
+    def test_desktop_app_user_model_id_matches_the_app_id(self) -> None:
+        # The AUMID must equal the appId, or Windows toasts silently no-op.
+        source = _desktop("main.ts")
+        assert "app.setAppUserModelId('com.matlens.agent')" in source
+
+    def test_rust_resolver_finds_both_the_new_and_the_old_bundle(self) -> None:
+        source = _rust("bootstrap.rs")
+        assert '"MatLens.exe"' in source
+        assert '"Hermes.exe"' in source
+        assert '"mac/MatLens.app/Contents/MacOS"' in source
+        assert '"mac/Hermes.app/Contents/MacOS"' in source
+
+    def test_rust_lock_probe_covers_both_macos_bundles(self) -> None:
+        source = _rust("update.rs")
+        assert '"MatLens.app"' in source
+        assert '"Hermes.app"' in source
+
+    def test_tauri_installer_uses_the_canonical_identifier(self) -> None:
+        source = _read(
+            REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
+        )
+        assert '"identifier": "com.matlens.agent.setup"' in source
+
+    def test_tauri_binary_name_is_canonical(self) -> None:
+        source = _read(
+            REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
+        )
+        assert 'name = "MatLens-Setup"' in source
+
+
+class TestUpdateMarkerIsWrittenUnderBothNames:
+    """A pre-rename reader must still see the lock held by a current writer.
+
+    The rename made the marker canonical-only on the write side. A Python or
+    Rust reader that predates the rename only knows the legacy name, so it
+    would treat a live update as lock-free and start a second one.
+    """
+
+    def test_posix_update_script_writes_both_names(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "desktop-update" / "posix.sh")
+        assert 'LEGACY_MARKER="$MATLENS_HOME/.hermes-update-in-progress"' in source
+        assert '> "$LEGACY_MARKER"' in source
+
+    def test_windows_update_script_writes_both_names(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1")
+        assert '$LegacyMarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"' in source
+        assert "WriteAllText($LegacyMarkerPath" in source
+
+    def test_windows_update_script_cleans_both_names(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1")
+        assert "foreach ($marker in @($MarkerPath, $LegacyMarkerPath))" in source
+
+    def test_install_ps1_finds_the_renamed_desktop_executable(self) -> None:
+        # The packaged exe is now `MatLens.exe`. The installer's post-build
+        # sanity check used to look only for `Hermes.exe`, so it threw
+        # "Desktop build completed but no ... was found" on EVERY build —
+        # aborting the install right after it had already built the app.
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "$desktopDir\\release\\win-unpacked\\MatLens.exe" in source
+        assert "$desktopDir\\release\\win-unpacked\\Hermes.exe" in source
+
+    def test_install_ps1_does_not_hardcode_the_legacy_desktop_exe_only(self) -> None:
+        source = _read(REPO_ROOT / "scripts" / "install.ps1")
+        assert "no MatLens.exe was found" in source
+
+    def test_exe_identity_stamp_uses_the_current_product_name(self) -> None:
+        # The rcedit stamp is what the user sees in Task Manager.
+        source = _read(REPO_ROOT / "apps" / "desktop" / "scripts" / "set-exe-identity.mjs")
+        assert "ProductName: 'MatLens'" in source
+        assert "ProductName: 'Hermes'" not in source
