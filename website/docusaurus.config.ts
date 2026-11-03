@@ -3,7 +3,7 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Hermes Agent',
+  title: 'MatLens Agent',
   tagline: 'The self-improving AI agent',
   favicon: 'img/favicon.ico',
 
@@ -11,7 +11,7 @@ const config: Config = {
   baseUrl: '/docs/',
 
   organizationName: 'NousResearch',
-  projectName: 'hermes-agent',
+  projectName: 'matlens-agent',
 
   onBrokenLinks: 'warn',
 
@@ -68,6 +68,51 @@ const config: Config = {
             from: '/installation',
             to: '/getting-started/installation',
           },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/guides/run-hermes-with-nous-portal',
+            to: '/guides/run-matlens-with-nous-portal',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/guides/secure-hermes-on-a-work-machine',
+            to: '/guides/secure-matlens-on-a-work-machine',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/guides/use-mcp-with-hermes',
+            to: '/guides/use-mcp-with-matlens',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/guides/use-soul-with-hermes',
+            to: '/guides/use-soul-with-matlens',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/guides/use-voice-mode-with-hermes',
+            to: '/guides/use-voice-mode-with-matlens',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
+            to: '/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-matlens-agent',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
+            to: '/user-guide/skills/bundled/software-development/software-development-matlens-agent-skill-authoring',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom',
+            to: '/user-guide/skills/bundled/software-development/software-development-inspecting-matlens-desktop-dom',
+          },
+          {
+            // Renamed with the Hermes -> MatLens rebrand
+            from: '/user-guide/skills/optional/devops/devops-hermes-s6-container-supervision',
+            to: '/user-guide/skills/optional/devops/devops-matlens-s6-container-supervision',
+          },
         ],
       },
     ],
@@ -103,7 +148,7 @@ const config: Config = {
     algolia: {
       appId: '2JLBVEYZN5',
       apiKey: '8fda2a49223ce185ac30c2dbf6898a07',
-      indexName: 'hermes docs',
+      indexName: 'matlens docs',
       contextualSearch: true,
     },
     colorMode: {
@@ -117,9 +162,9 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Hermes Agent',
+      title: 'MatLens Agent',
       logo: {
-        alt: 'Hermes Agent',
+        alt: 'MatLens Agent',
         src: 'img/logo.png',
       },
       items: [
