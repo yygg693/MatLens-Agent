@@ -679,7 +679,11 @@ MATLENS_HOME env（无条件生效）
 
 ## 9. 尚未处理
 
-- **E 文档网站**（`website/`）—— 单独 PR
+- **E 文档网站**（`website/`）—— 单独 PR。
+
+> 除此之外，**代码区（`apps/` / `matlens_cli/` / `scripts/` / `plugins/` /
+> `web/` / `agent/` / `ui-tui/` / `docker/` / `tools/`）已无真残留**。
+> 剩下的 `Hermes` 字样全部属于「刻意保留」类别，见 §10.9。
 
 ---
 
@@ -825,10 +829,39 @@ Nous 的外部服务，MatLens 没有自有云，相关文案保持指向原处�
 | 桌面端三个 TS 工程 typecheck | 0 error |
 | ESLint | 0 error（115 个既有 `document` 全局 warning） |
 | electron 全量 | 1246 项，27 项失败 —— **基线复现出同样的失败**（SSH / chmod / git / 文件权限位，Windows 环境差异），引入 0 回归 |
-| Python 受影响测试 | 146 通过，2 项基线既有失败（Windows symlink 权限） |
-| 新增契约测试 + 迁移测试 | **81 项全绿**（3 项按平台跳过） |
-| `install.ps1` / `windows.ps1` PowerShell AST | 无语法错误 |
+| web 端全量 | 268 项全绿 |
+| Python 受影响测试集 | 4 项失败，全部 `git stash` 逐项验证为**基线既有**（symlink 权限 ×2、CI workflow ×2） |
+| 新增契约测试 + 迁移测试 | **85 项全绿**（3 项按平台跳过） |
+| `install.ps1` / `windows.ps1` AST | 无语法错误 |
 | `install.sh` / `posix.sh` `bash -n` | 通过 |
+| `intro-copy.jsonl` | 75 行 JSON 全部解析成功 |
+| 迁移端到端实测 | dry-run 不写盘、`venv/` 被排除、冲突不覆盖、幂等 —— 全部符合契约 |
+
+### 10.9 刻意保留的 Hermes 字样（不要动）
+
+改名做到最后，剩下的 `Hermes` 全部属于**有意保留**。这一节就是防止后来人
+「顺手全局替换」把它改坏：
+
+| 字样 | 位置 | 为什么保留 |
+|---|---|---|
+| `Hermes Cloud` | 桌面端登录/续期文案 | **Nous 的外部服务**。MatLens 没有自有云，这些文案必须指向原处（§7 已拍板） |
+| `X-Hermes-Session-Token` | 桌面端请求头 | 后端**双读**的 header 契约（§8 的 A1/A4）。改掉后端就不认了 |
+| `hermes-agent.nousresearch.com` | 安装脚本、文档链接 | **真实上游地址**，DNS 可解析。改了就变死链 |
+| `NousResearch/hermes-agent` | install.cmd 的 GitHub raw 路径 | 同上 |
+| `Nous Research Hermes 3 & 4 models` | `agent/agent_init.py` | 上游**模型家族的正式名称** |
+| `Hermes Agent framework` | `agent/prompt_builder.py` | 上游**框架的正式名称**（MatLens 建立在它之上） |
+| `HermesAgent/1.0` | `plugins/dashboard_auth/nous/` | 对 Nous 门户发请求的 **User-Agent**，服务端可能据此识别 |
+| `Nous Research — Hermes model family` | `plugins/model-providers/nous/` | 上游模型系列名 |
+| `Hermes.exe` / `Hermes.app` | Rust 产物解析器、install.ps1 构建校验 | **改名前产物的 legacy 回落**。改名前构建的产物仍在用户磁盘上，只认新名就找不到要替换的 bundle |
+| `HERMES_HOME` 等 38 个 `HERMES_*` | 全仓 | **对外环境变量契约**。`HERMES_HOME` 只在目录确实存在时生效（§8.6） |
+| `HermesHome` / `HermesInstall` / `recentHermesLog` | 内部变量与函数名 | 纯进程内标识符，不进界面、不进协议。改动只会制造无谓的 diff |
+
+> **判定口诀**：
+> 1. 它指的是**上游 Nous 的东西**吗？→ 保留。
+> 2. 它是**对外契约**（环境变量、header、URL）吗？→ 保留，并保证新名也能用。
+> 3. 它是**改名前的磁盘产物**吗？→ 保留为回落（canonical 优先、legacy 只读）。
+> 4. 以上都不是 —— 它只是在说**我们自己** → 改掉。
+
 
 
 
