@@ -274,7 +274,7 @@ function Show-ProgressWindow {
             $mute = [System.Drawing.ColorTranslator]::FromHtml("#A8A8A8")
         }
         $form = New-Object System.Windows.Forms.Form
-        $form.Text = "Hermes"
+        $form.Text = "MatLens"
         $form.FormBorderStyle = "FixedSingle"
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
@@ -288,13 +288,13 @@ function Show-ProgressWindow {
         $bar.MarqueeAnimationSpeed = 30
         $bar.SetBounds(60, 128, 160, 8)
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Updating Hermes"
+        $title.Text = "Updating MatLens"
         $title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
         $title.ForeColor = $fore
         $title.TextAlign = "MiddleCenter"
         $title.SetBounds(16, 156, 248, 28)
         $sub = New-Object System.Windows.Forms.Label
-        $sub.Text = "Hermes will open once done."
+        $sub.Text = "MatLens will open once done."
         $sub.Font = New-Object System.Drawing.Font("Segoe UI", 9)
         $sub.ForeColor = $mute
         $sub.TextAlign = "TopCenter"
@@ -656,7 +656,7 @@ try {
             # A live Desktop means a live backend re-locking the venv at any
             # moment. Updating under it is how installs brick. Abort.
             $finalCode = 4
-            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            $finalMsg = "Update aborted: the MatLens window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close MatLens fully and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -798,7 +798,7 @@ try {
         if (-not $cameBack -and $RelaunchExe) {
             # Launch was due and did not verifiably land: truthful result
             # for the next boot, manual state held on screen now.
-            $finalMsg = "Update complete. Reopen Hermes to finish (it could not restart itself)."
+            $finalMsg = "Update complete. Reopen MatLens to finish (it could not restart itself)."
             Write-Result $true 0 $finalMsg $true
             Show-ManualFinale $finalMsg
         }
