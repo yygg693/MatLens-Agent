@@ -25,24 +25,119 @@ const NODE_COLORS = {
   '其他': '#94a3b8',
 };
 
-let _visGraph = null;       // vis.Network 实例
-let _visNodes = null;       // vis DataSet
-let _visEdges = null;
 let _rawGraph = null;       // 最近一次 /api/graph 响应
+let _graphFetchAt = 0;      // 上次拉取时刻（8 秒内复用，避免启动和切视图各拉一次）
+let _g3 = null;             // 3D 渲染器状态（懒初始化）
 
-function _loadVisNetwork() {
-  // 已加载则直接返回
-  if (typeof window !== 'undefined' && window.vis && window.vis.Network) {
-    return Promise.resolve(window.vis);
+/* ── 知识图谱：3D 脑区神经图（零依赖，纯 canvas 2D 透视投影） ──
+ *
+ * 为什么不再用 vis-network：旧实现从 unpkg CDN 拉脚本，网络不通就退化成
+ * 文字列表；而"3D"在这里只需要把几十个点放到球面上转起来——自己算一遍
+ * 透视投影的成本，远低于引一个三维引擎进来。86 实体 / 99 关系这个量级，
+ * canvas 2D 每帧三百来次绘制绰绰有余，还能把节点画成神经元、按脑区分色，
+ * 这些在通用引擎里反而不好做。
+ */
+
+// 分类 → 脑区。区中心用斐波那契球面算，布局是决定论的（刷新不变）。
+const BRAIN_REGIONS = [
+  { key: '用户', name: '前额叶 · 身份', color: '#38bdf8' },
+  { key: '方法', name: '顶叶 · 方法', color: '#34d399' },
+  { key: '材料', name: '颞叶 · 实体', color: '#818cf8' },
+  { key: '性质', name: '枕叶 · 属性', color: '#fbbf24' },
+  { key: '结论', name: '额叶回 · 判断', color: '#f472b6' },
+  { key: '参数', name: '顶叶沟 · 数值', color: '#22d3ee' },
+  { key: '其他', name: '联合皮层 · 待归类', color: '#94a3b8' },
+];
+
+/** 斐波那契球面：n 个近似均匀分布的单位向量。 */
+function _fibSphere(n) {
+  const ga = Math.PI * (3 - Math.sqrt(5));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const y = n === 1 ? 0 : 1 - (i / (n - 1)) * 2;
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const t = ga * i;
+    out.push([Math.cos(t) * r, y, Math.sin(t) * r]);
   }
-  return new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://unpkg.com/vis-network/standalone/umd/vis-network.min.js';
-    s.async = true;
-    s.onload = () => resolve(window.vis);
-    s.onerror = () => reject(new Error('vis-network CDN 加载失败'));
-    document.head.appendChild(s);
+  return out;
+}
+
+/** 以单位向量 n 为轴的一组正交基，用来在球冠里采样。 */
+function _basis(n) {
+  const ax = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  let tx = n[1] * ax[2] - n[2] * ax[1];
+  let ty = n[2] * ax[0] - n[0] * ax[2];
+  let tz = n[0] * ax[1] - n[1] * ax[0];
+  const tl = Math.hypot(tx, ty, tz) || 1;
+  tx /= tl; ty /= tl; tz /= tl;
+  return [
+    [tx, ty, tz],
+    [n[1] * tz - n[2] * ty, n[2] * tx - n[0] * tz, n[0] * ty - n[1] * tx],
+  ];
+}
+
+/** 字符串 → 0..1 的稳定散列（让"皮层厚度"抖动可重复，不是每次刷新乱跳）。 */
+function _hash01(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 16777619) >>> 0;
+  }
+  return (h % 100000) / 100000;
+}
+
+/** 把节点铺到各个脑区的球冠里，同时建邻接关系。 */
+function _layoutBrain(nodes, edges) {
+  const centers = _fibSphere(BRAIN_REGIONS.length);
+  const byKey = {};
+  BRAIN_REGIONS.forEach(r => { byKey[r.key] = []; });
+  nodes.forEach(n => {
+    const k = String(n.category || '其他');
+    (byKey[k] || byKey['其他']).push(n);
   });
+
+  const out = [];
+  BRAIN_REGIONS.forEach((region, ri) => {
+    const list = byKey[region.key] || [];
+    if (!list.length) return;
+    const c = centers[ri];
+    const [t, b] = _basis(c);
+    // 区内点少就收得更紧，点多用更大球冠——既好看又不会跨区粘连
+    const spread = Math.min(0.52, 0.20 + 0.30 * Math.sqrt(list.length / 30));
+    list.forEach((n, i) => {
+      const frac = list.length === 1 ? 0 : i / (list.length - 1);
+      const cone = Math.sqrt(frac) * spread;
+      const ang = i * 2.39996;                      // 黄金角螺旋，避免扎堆
+      const sp = Math.sin(cone), cp = Math.cos(cone);
+      const lx = sp * Math.cos(ang), ly = sp * Math.sin(ang);
+      const ux = cp * c[0] + lx * t[0] + ly * b[0];
+      const uy = cp * c[1] + lx * t[1] + ly * b[1];
+      const uz = cp * c[2] + lx * t[2] + ly * b[2];
+      const rad = 0.90 + 0.13 * _hash01(String(n.id)); // 皮层厚度
+      out.push({
+        id: String(n.id),
+        label: String(n.label || n.id),
+        cat: region.key,
+        color: n.color || region.color,
+        x: ux * rad, y: uy * rad, z: uz * rad,
+        deg: 0,
+        sx: 0, sy: 0, sr: 0, sz: 0,   // 每帧投影结果
+      });
+    });
+  });
+
+  const idx = new Map(out.map((n, i) => [n.id, i]));
+  const es = [];
+  (edges || []).forEach(e => {
+    const a = idx.get(String(e.source));
+    const b = idx.get(String(e.target));
+    if (a === undefined || b === undefined || a === b) return;
+    es.push({ a, b, label: String(e.label || ''), sx0: 0, sy0: 0, sx1: 0, sy1: 0,
+              cxp: 0, cyp: 0, z: 0, sr: 0 });
+    out[a].deg++;
+    out[b].deg++;
+  });
+  return { nodes: out, edges: es };
 }
 
 function _ensureGraphContainer() {
@@ -71,100 +166,456 @@ function _renderDetailPanel(nodeId) {
       ' ' + esc(e.label || '关系') + ' ' + dir + ' ' + esc(otherLabel) + '</div>';
   }).join('');
   panel.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+    '<button data-g3-back style="background:none;border:0;color:#7dd3fc;font-size:11.5px;cursor:pointer;padding:0">← 全部脑区</button>' +
+    '</div>' +
     '<div style="font-weight:700;margin-bottom:4px;font-size:14px">' + esc(node.label || node.id) + '</div>' +
     '<div style="font-size:11px;color:var(--ml-text-faint);margin-bottom:10px">' + esc(cat) + ' · ' + rel.length + ' 条关联</div>' +
     '<div style="font-size:12px;color:var(--ml-text-dim);line-height:1.7;margin-bottom:8px">' +
     '该实体由 DeepSeek 从对话记忆中抽取，来源为本项目积累的材料科研对话。</div>' +
     (relHtml || '<div style="font-size:12px;color:var(--ml-text-faint)">暂无关联关系</div>');
+  const back = panel.querySelector('[data-g3-back]');
+  if (back) {
+    back.onclick = () => {
+      if (_g3) { _g3.sel = null; _g3.hover = null; _g3.focus = null; }
+      if (_rawGraph) _renderLegend(panel, _rawGraph);
+    };
+  }
+}
+
+/* ── 3D 脑区图：渲染器 ───────────────────────────────── */
+
+/** hex → rgba 字符串（sprite 与描边都要带透明度）。 */
+function _rgba(hex, a) {
+  const h = String(hex || '#94a3b8').replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+/** 预烘一张神经元光点，渲染时只做 drawImage——比每帧建渐变便宜一个量级。 */
+function _makeNeuronSprite(color) {
+  const S = 96;
+  const c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const g = c.getContext('2d');
+  const rg = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  rg.addColorStop(0, 'rgba(255,255,255,0.98)');
+  rg.addColorStop(0.14, _rgba(color, 0.98));
+  rg.addColorStop(0.36, _rgba(color, 0.42));
+  rg.addColorStop(0.62, _rgba(color, 0.12));
+  rg.addColorStop(1, _rgba(color, 0));
+  g.fillStyle = rg;
+  g.fillRect(0, 0, S, S);
+  return c;
+}
+
+function _renderLegend(panel, d) {
+  if (!panel) return;
+  const counts = {};
+  (d.nodes || []).forEach(n => {
+    const k = String(n.category || '其他');
+    counts[k] = (counts[k] || 0) + 1;
+  });
+  const rows = BRAIN_REGIONS.filter(r => counts[r.key]).map(r =>
+    '<div style="display:flex;align-items:center;gap:9px;padding:5px 0;font-size:12px">' +
+    '<span style="width:8px;height:8px;border-radius:50%;flex:none;background:' + r.color +
+    ';box-shadow:0 0 9px ' + r.color + '99"></span>' +
+    '<span style="flex:1;color:#cbd5e1">' + esc(r.name) + '</span>' +
+    '<span style="color:#94a3b8;font-variant-numeric:tabular-nums">' + counts[r.key] + '</span></div>'
+  ).join('');
+  panel.innerHTML =
+    '<div style="font-weight:700;margin-bottom:10px;font-size:13px">实体图谱 · 3D 脑区</div>' +
+    '<div style="font-size:11.5px;color:var(--ml-text-faint);line-height:1.75;margin-bottom:12px">' +
+    (d.fallback ? '示例图谱 · ' : '') + (d.nodes || []).length + ' 实体 · ' +
+    ((d.edges || []).length) + ' 关系<br>拖拽旋转 · 滚轮缩放 · 单击看关联 · 双击聚焦</div>' +
+    rows +
+    '<div style="margin-top:14px;font-size:11px;color:var(--ml-text-faint);line-height:1.7">' +
+    '每个光点是一个实体，光晕大小表示连接数；细线是实体之间的语义关系。</div>';
+}
+
+function _mountBrain(box, d, sig) {
+  if (_g3) {
+    _g3.running = false;
+    if (_g3.raf) cancelAnimationFrame(_g3.raf);
+    if (_g3._onResize) window.removeEventListener('resize', _g3._onResize);
+  }
+  if (getComputedStyle(box).position === 'static') box.style.position = 'relative';
+  box.innerHTML = '';
+
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:100%;cursor:grab;touch-action:none';
+  box.appendChild(canvas);
+
+  const layout = _layoutBrain(d.nodes || [], d.edges || []);
+  const nbr = new Map();
+  layout.nodes.forEach(n => nbr.set(n.id, new Set()));
+  layout.edges.forEach(e => {
+    nbr.get(layout.nodes[e.a].id).add(layout.nodes[e.b].id);
+    nbr.get(layout.nodes[e.b].id).add(layout.nodes[e.a].id);
+  });
+
+  const st = {
+    sig, canvas, box, ctx: canvas.getContext('2d'),
+    nodes: layout.nodes, edges: layout.edges, nbr,
+    W: 0, H: 0, dpr: 1,
+    yaw: 0.45, pitch: -0.18, dist: 2.5,
+    vyaw: 0, vpitch: 0,
+    auto: true, dragging: false, moved: 0,
+    sel: null, hover: null, focus: null,
+    lastX: 0, lastY: 0, t: 0, raf: 0, running: false,
+    sprites: {},
+  };
+  _g3 = st;
+  BRAIN_REGIONS.forEach(r => { st.sprites[r.key] = _makeNeuronSprite(r.color); });
+  st.sprites._ = _makeNeuronSprite('#94a3b8');
+
+  st.resize = function () {
+    const rect = box.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    st.dpr = dpr;
+    st.W = Math.max(300, Math.floor(rect.width || box.clientWidth || 320));
+    st.H = Math.max(240, Math.floor(rect.height || box.clientHeight || 280));
+    canvas.width = Math.floor(st.W * dpr);
+    canvas.height = Math.floor(st.H * dpr);
+    st.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+
+  st.frame = function (now) {
+    const dt = Math.min(48, now - (st.t || now));
+    st.t = now;
+    if (st.auto && !st.dragging) st.yaw += dt * 0.00030;
+    if (!st.dragging) {
+      if (Math.abs(st.vyaw) > 1e-5) { st.yaw += st.vyaw; st.vyaw *= 0.93; }
+      if (Math.abs(st.vpitch) > 1e-5) {
+        st.pitch = Math.max(-1.25, Math.min(1.25, st.pitch + st.vpitch));
+        st.vpitch *= 0.93;
+      }
+    }
+    _drawBrain(st, now);
+  };
+
+  // 交互时立刻补一帧：标签页不可见时 rAF 会被浏览器停掉，
+  // 只等下一帧的话拖拽是"看不见反应"的。
+  st.paint = function () {
+    try { _drawBrain(st, performance.now()); } catch (_) {}
+  };
+
+  st.start = function () {
+    if (st.running) return;
+    st.running = true;
+    st.t = 0;
+    // 先同步画一帧：标签页在后台时 rAF 会被节流甚至完全停摆，
+    // 只靠 rAF 的话第一次切回来会看到一帧空白。
+    try { _drawBrain(st, performance.now()); } catch (_) {}
+    const loop = now => {
+      if (!st.running) return;
+      st.frame(now);
+      st.raf = requestAnimationFrame(loop);
+    };
+    st.raf = requestAnimationFrame(loop);
+  };
+  st.stop = function () {
+    st.running = false;
+    if (st.raf) cancelAnimationFrame(st.raf);
+    st.raf = 0;
+  };
+
+  const hitTest = (mx, my) => {
+    let best = null, bestD = Infinity;
+    st.nodes.forEach(n => {
+      const dx = mx - n.sx, dy = my - n.sy;
+      const d = dx * dx + dy * dy;
+      const lim = Math.max(11, n.sr * 2.4);
+      if (d < lim * lim && d < bestD) { bestD = d; best = n; }
+    });
+    return best;
+  };
+  st.hitTest = hitTest;
+
+  canvas.addEventListener('pointerdown', e => {
+    st.dragging = true; st.moved = 0;
+    st.lastX = e.clientX; st.lastY = e.clientY;
+    canvas.style.cursor = 'grabbing';
+    if (canvas.setPointerCapture) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
+  });
+  canvas.addEventListener('pointermove', e => {
+    const rect = canvas.getBoundingClientRect();
+    if (st.dragging) {
+      const dx = e.clientX - st.lastX, dy = e.clientY - st.lastY;
+      st.lastX = e.clientX; st.lastY = e.clientY;
+      st.moved += Math.abs(dx) + Math.abs(dy);
+      st.yaw += dx * 0.0056;
+      st.pitch = Math.max(-1.25, Math.min(1.25, st.pitch + dy * 0.0056));
+      st.vyaw = dx * 0.0056;
+      st.vpitch = dy * 0.0056;
+      st.paint();
+    } else {
+      const n = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+      st.hover = n ? n.id : null;
+      canvas.style.cursor = n ? 'pointer' : 'grab';
+    }
+  });
+  canvas.addEventListener('pointerup', e => {
+    const wasDrag = st.moved >= 5;
+    st.dragging = false;
+    canvas.style.cursor = 'grab';
+    if (wasDrag) return;
+    const rect = canvas.getBoundingClientRect();
+    const n = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    st.focus = null;
+    st.sel = n ? n.id : null;
+    st.hover = n ? n.id : null;
+    st.paint();
+    if (n) _renderDetailPanel(n.id);
+    else if (_rawGraph) _renderLegend(document.getElementById('mem-graph-detail'), _rawGraph);
+  });
+  canvas.addEventListener('dblclick', e => {
+    const rect = canvas.getBoundingClientRect();
+    const n = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    if (!n) { st.focus = null; return; }
+    st.sel = n.id;
+    st.focus = st.focus === n.id ? null : n.id;
+    st.paint();
+    _renderDetailPanel(n.id);
+  });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    st.dist = Math.max(1.15, Math.min(4.8, st.dist + (e.deltaY > 0 ? 0.14 : -0.14)));
+    st.paint();
+  }, { passive: false });
+
+  // 悬浮操作条
+  const hud = document.createElement('div');
+  hud.style.cssText = 'position:absolute;left:12px;bottom:10px;display:flex;gap:7px;z-index:3';
+  hud.innerHTML =
+    '<button class="btn btn-ghost btn-sm" data-g3="spin">⏸ 自转</button>' +
+    '<button class="btn btn-ghost btn-sm" data-g3="reset">重置视角</button>';
+  box.appendChild(hud);
+  hud.addEventListener('click', ev => {
+    const t = ev.target.closest ? ev.target.closest('[data-g3]') : null;
+    if (!t) return;
+    if (t.dataset.g3 === 'spin') {
+      st.auto = !st.auto;
+      t.textContent = st.auto ? '⏸ 自转' : '▶ 自转';
+    } else {
+      st.yaw = 0.45; st.pitch = -0.18; st.dist = 2.5;
+      st.vyaw = 0; st.vpitch = 0; st.sel = null; st.hover = null; st.focus = null;
+      st.paint();
+      if (_rawGraph) _renderLegend(document.getElementById('mem-graph-detail'), _rawGraph);
+    }
+  });
+
+  st._onResize = () => st.resize();
+  window.addEventListener('resize', st._onResize);
+  st.resize();
+  // 只读调试句柄：排查渲染/交互问题时能在控制台直接看坐标、命中、选区
+  window.__mlGraph3 = st;
+}
+
+function _drawBrain(st, now) {
+  const ctx = st.ctx, W = st.W, H = st.H;
+  const cx = W / 2, cyc = H / 2;
+  const scale = Math.min(W, H) * 0.44;
+  const FOCAL = 4.0, DIST = st.dist;
+  // 透视只负责"近大远小"的体积感；真正的缩放交给 dist（boost），
+  // 否则 dist 一大，节点会被压成 2 像素一个点。
+  const boost = 2.5 / DIST;
+  const cyw = Math.cos(st.yaw), syw = Math.sin(st.yaw);
+  const cpi = Math.cos(st.pitch), spi = Math.sin(st.pitch);
+  const tmp = { sx: 0, sy: 0, sz: 0, per: 0 };
+
+  const proj = (x, y, z) => {
+    const x1 = x * cyw - z * syw;
+    const z1 = x * syw + z * cyw;
+    const y2 = y * cpi - z1 * spi;
+    const z2 = y * spi + z1 * cpi;
+    const per = (FOCAL / (FOCAL + z2)) * boost;
+    tmp.sx = cx + x1 * scale * per;
+    tmp.sy = cyc - y2 * scale * per;
+    tmp.sz = z2;
+    tmp.per = per;
+    return tmp;
+  };
+
+  // 背景
+  const bg = ctx.createRadialGradient(cx, cyc * 0.95, 0, cx, cyc, Math.max(W, H) * 0.65);
+  bg.addColorStop(0, 'rgba(24,36,60,0.96)');
+  bg.addColorStop(0.55, 'rgba(11,17,30,0.94)');
+  bg.addColorStop(1, 'rgba(5,8,15,0.97)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 脑壳经纬（给体积感，收敛格数以控成本）
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(120,160,220,0.09)';
+  for (let i = 0; i < 8; i++) {
+    const lon = (i / 8) * Math.PI * 2;
+    ctx.beginPath();
+    for (let j = 0; j <= 16; j++) {
+      const lat = -1.5708 + (j / 16) * Math.PI;
+      const r = Math.cos(lat);
+      proj(r * Math.cos(lon), Math.sin(lat), r * Math.sin(lon));
+      if (j) ctx.lineTo(tmp.sx, tmp.sy); else ctx.moveTo(tmp.sx, tmp.sy);
+    }
+    ctx.stroke();
+  }
+  for (let k = 1; k < 6; k++) {
+    const lat = -1.5708 + (k / 6) * Math.PI;
+    const r = Math.cos(lat), y = Math.sin(lat);
+    ctx.beginPath();
+    for (let j = 0; j <= 24; j++) {
+      const lon = (j / 24) * Math.PI * 2;
+      proj(r * Math.cos(lon), y, r * Math.sin(lon));
+      if (j) ctx.lineTo(tmp.sx, tmp.sy); else ctx.moveTo(tmp.sx, tmp.sy);
+    }
+    ctx.stroke();
+  }
+
+  // 节点投影
+  const nodes = st.nodes;
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    proj(n.x, n.y, n.z);
+    n.sx = tmp.sx; n.sy = tmp.sy; n.sz = tmp.sz; n.per = tmp.per;
+    // 屏幕半径跟着球体尺度走：球越大，光点也略大，但别跟着线性放大
+    n.sr = (3.2 + Math.min(5.0, n.deg * 0.7)) * tmp.per * (scale / 130);
+  }
+
+  // 边：控制点沿球面法线外推，投影后画二次贝塞尔
+  const selId = st.sel;
+  const focus = st.focus;
+  const focusNbr = focus && st.nbr.get(focus) ? st.nbr.get(focus) : null;
+  for (let i = 0; i < st.edges.length; i++) {
+    const e = st.edges[i];
+    const A = nodes[e.a], B = nodes[e.b];
+    const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2, mz = (A.z + B.z) / 2;
+    const ml = Math.hypot(mx, my, mz) || 1;
+    const chord = Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z);
+    const rr = 1 + 0.30 * Math.min(1.5, chord);
+    proj((mx / ml) * rr, (my / ml) * rr, (mz / ml) * rr);
+    const cpx = tmp.sx, cpy = tmp.sy, cz = tmp.sz;
+
+    const active = selId && (A.id === selId || B.id === selId);
+    const dimmed = focus && !(A.id === focus || B.id === focus ||
+                              (focusNbr && (focusNbr.has(A.id) || focusNbr.has(B.id))));
+    let alpha, width, color;
+    if (active) {
+      alpha = 0.92; width = 1.9; color = _rgba(B.color || '#38bdf8', 0.9);
+    } else if (dimmed) {
+      alpha = 0.05; width = 0.8; color = 'rgba(120,150,190,0.5)';
+    } else {
+      const near = Math.max(0, Math.min(1, ((A.sz + cz) / 2 + 1) / 2));
+      alpha = 0.10 + 0.20 * near; width = 0.8 + 0.7 * near;
+      color = 'rgba(130,170,220,0.9)';
+    }
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width * (A.per + B.per) / 2 * 1.35;
+    ctx.beginPath();
+    ctx.moveTo(A.sx, A.sy);
+    ctx.quadraticCurveTo(cpx, cpy, B.sx, B.sy);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 选中节点的关系上跑脉冲
+    if (active) {
+      const ph = ((now / 1100) + (i % 7) / 7) % 1;
+      const t1 = ph, mt = 1 - t1;
+      const px = mt * mt * A.sx + 2 * mt * t1 * cpx + t1 * t1 * B.sx;
+      const py = mt * mt * A.sy + 2 * mt * t1 * cpy + t1 * t1 * B.sy;
+      ctx.beginPath();
+      ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+      ctx.fillStyle = _rgba(B.color || '#38bdf8', 0.85);
+      ctx.fill();
+    }
+  }
+
+  // 节点：远→近，近的盖远的
+  const order = nodes.slice().sort((a, b) => a.sz - b.sz);
+  for (let i = 0; i < order.length; i++) {
+    const n = order[i];
+    const sp = st.sprites[n.cat] || st.sprites._;
+    const isSel = n.id === st.sel;
+    const isHover = n.id === st.hover;
+    const dimmed = focus && n.id !== focus &&
+                   !(focusNbr && focusNbr.has(n.id));
+    const r = n.sr * (isSel ? 2.0 : (isHover ? 1.5 : 1.0));
+    ctx.globalAlpha = dimmed ? 0.16 : (0.5 + 0.5 * Math.min(1, n.per));
+    ctx.drawImage(sp, n.sx - r * 2.6, n.sy - r * 2.6, r * 5.2, r * 5.2);
+    ctx.globalAlpha = 1;
+
+    if (isSel) {
+      const ph = (now / 1500) % 1;
+      ctx.beginPath();
+      ctx.arc(n.sx, n.sy, n.sr * (1.3 + ph * 2.6), 0, Math.PI * 2);
+      ctx.strokeStyle = _rgba(n.color, 0.55 * (1 - ph));
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+  }
+
+  // 只给选中/悬停的节点画名字，86 个标签一起画会糊成一团也费性能
+  const ln = st.nodes.find(n => n.id === st.sel) ||
+             st.nodes.find(n => n.id === st.hover);
+  if (ln) {
+    const ty = ln.sy - ln.sr * 2.4 - 7;
+    ctx.font = '600 13px ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = 'rgba(4,8,16,0.92)';
+    ctx.strokeText(ln.label, ln.sx, ty);
+    ctx.fillStyle = '#eaf2ff';
+    ctx.fillText(ln.label, ln.sx, ty);
+    ctx.textAlign = 'start';
+  }
 }
 
 export async function loadGraph() {
-  const d = await jget('/api/graph');
+  const panel = document.getElementById('mem-graph-detail');
+  // 8 秒内重复调用直接用缓存：启动时预热一次，切到图谱视图不必再打一次请求
+  let d = null;
+  if (_rawGraph && Date.now() - _graphFetchAt < 8000) {
+    d = _rawGraph;
+  } else {
+    try {
+      d = await jget('/api/graph');
+      _graphFetchAt = Date.now();
+    } catch (e) {
+      d = _rawGraph;
+    }
+  }
   if (!d || !d.nodes) {
-    const dd = document.getElementById('mem-graph-detail');
-    if (dd) dd.innerHTML = '<div style="font-weight:700;margin-bottom:9px;font-size:13px">记忆详情</div><div style="font-size:12px;color:var(--ml-text-faint)">图谱后端暂不可用</div>';
+    if (panel) {
+      panel.innerHTML = '<div style="font-weight:700;margin-bottom:9px;font-size:13px">记忆详情</div>' +
+        '<div style="font-size:12px;color:var(--ml-text-faint)">图谱后端暂不可用</div>';
+    }
     return;
   }
   _rawGraph = d;
-  const countEl = document.getElementById('mem-graph-detail');
-  if (countEl) {
-    countEl.innerHTML = '<div style="font-weight:700;margin-bottom:8px;font-size:13px">实体图谱</div>' +
-      '<div style="font-size:11.5px;color:var(--ml-text-faint);line-height:1.8">' +
-      (d.fallback ? '示例图谱 · ' : '') + d.nodes.length + ' 实体 · ' + (d.edges ? d.edges.length : 0) +
-      ' 关系<br>点击节点查看关联实体与来源。</div>';
+  if (!d.nodes.length) {
+    if (panel) {
+      panel.innerHTML = '<div style="font-weight:700;margin-bottom:9px;font-size:13px">实体图谱</div>' +
+        '<div style="font-size:12px;color:var(--ml-text-faint)">暂无实体。先在对话里积累一些材料科研内容。</div>';
+    }
+    return;
   }
 
-  if (!d.nodes.length) return;
+  const box = _ensureGraphContainer();
+  if (!box) return;
 
-  // 确保容器存在
-  const container = _ensureGraphContainer();
-  if (!container) return;
+  // 图谱视图还没显示时容器宽高为 0，此时建渲染器会得到一张尺寸错位的画布，
+  // 也会白跑 rAF。数据已经存进 _rawGraph，等切过去再建。
+  if (!box.clientWidth || !box.clientHeight) return;
 
-  try {
-    const vis = await _loadVisNetwork();
-    // 转 vis DataSet
-    _visNodes = new vis.DataSet(d.nodes.map(n => {
-      const cat = n.category || '其他';
-      return {
-        id: String(n.id),
-        label: n.label || n.id,
-        group: cat,
-        color: { background: n.color || NODE_COLORS[cat] || NODE_COLORS['其他'], border: '#ffffff33' },
-        font: { color: '#e2e8f0', size: 13 },
-        value: n.val || 1,
-      };
-    }));
-    _visEdges = new vis.DataSet(d.edges.map((e, i) => ({
-      id: 'e' + i,
-      from: String(e.source),
-      to: String(e.target),
-      label: e.label || '',
-      arrows: 'to',
-      color: { color: '#475569', highlight: '#38bdf8' },
-      font: { color: '#94a3b8', size: 10, strokeWidth: 0 },
-      smooth: { type: 'continuous' },
-    })));
-
-    const data = { nodes: _visNodes, edges: _visEdges };
-    const options = {
-      physics: {
-        barnesHut: { gravitationalConstant: -4500, springLength: 140, springConstant: 0.04, damping: 0.4 },
-        stabilization: { iterations: 150 },
-      },
-      interaction: { hover: true, tooltipDelay: 120 },
-      nodes: { shape: 'dot', scaling: { min: 12, max: 32 } },
-      edges: { width: 1.2 },
-    };
-    if (_visGraph) { _visGraph.destroy(); _visGraph = null; }
-    _visGraph = new vis.Network(container, data, options);
-
-    // 点击节点 → 高亮关联边 + 右侧面板
-    _visGraph.on('click', (params) => {
-      if (params.nodes && params.nodes.length) {
-        const nodeId = params.nodes[0];
-        // 高亮关联边：只保留与该节点相连的边高亮，其余变淡
-        const connected = _visEdges.get().filter(e =>
-          String(e.from) === String(nodeId) || String(e.to) === String(nodeId)
-        ).map(e => e.id);
-        _visEdges.forEach(e => {
-          const active = connected.includes(e.id);
-          _visEdges.update({
-            id: e.id,
-            color: { color: active ? '#38bdf8' : '#334155', highlight: '#38bdf8' },
-            width: active ? 2.2 : 1.0,
-            dashes: active ? false : true,
-          });
-        });
-        _renderDetailPanel(nodeId);
-      }
-    });
-  } catch (e) {
-    // CDN 失败降级为文字列表
-    const dd = document.getElementById('mem-graph-detail');
-    if (dd) dd.innerHTML = '<div style="font-weight:700;margin-bottom:9px;font-size:13px">记忆详情</div>' +
-      '<div style="font-size:12px;color:var(--ml-warn)">图谱可视化库加载失败，显示实体列表：</div>' +
-      d.nodes.slice(0, 15).map(n => '<div class="mem-item"><span class="mem-cat" style="color:' + (n.color || '#94a3b8') + '">●</span> ' + esc(String(n.label || n.id)) + '</div>').join('');
+  // 同一版图谱（实体数/关系数/更新时间都没变）不重排布局，切 tab 回来是瞬时的
+  const sig = (d.nodes.length || 0) + ':' + ((d.edges || []).length) + ':' + String(d.updated_at || '');
+  if (!_g3 || _g3.sig !== sig || _g3.box !== box) {
+    _mountBrain(box, d, sig);
+  } else {
+    _g3.resize();
   }
+  _g3.start();
+  if (!_g3.sel) _renderLegend(panel, d);
 }
 
 /* ── 记忆中心：概览 / 列表 / 详情 三栏 ─────────────────── */
@@ -266,9 +717,9 @@ function computeDupGroups(items, threshold) {
  * 判定逻辑只留在后端一处（plugins/memory/mem0/_dedup.py），前端这份
  * 只是降级兜底，避免两套阈值各自漂移。
  */
-async function fetchDupGroups(all) {
+async function fetchDupGroups(all, preFetched) {
   try {
-    const r = await fetch('/api/memory/duplicates');
+    const r = preFetched || await fetch('/api/memory/duplicates');
     if (r.ok) {
       const d = await r.json();
       if (d && Array.isArray(d.groups)) {
@@ -296,7 +747,13 @@ export async function loadMemories() {
       _memHits = data.memories || [];
       _memTotal = (typeof data.total === 'number') ? data.total : null;
     } else {
-      const r = await fetch('/api/memory?offset=0&limit=' + MEM_FETCH_LIMIT);
+      // 三次请求彼此不依赖，并行发出去：串行时首屏要等三个 RTT 排队，
+      // 并行后总耗时约等于最慢的那一个。
+      const pList = fetch('/api/memory?offset=0&limit=' + MEM_FETCH_LIMIT);
+      const pSup = fetch('/api/memory?offset=0&limit=' + MEM_FETCH_LIMIT + '&include_superseded=true');
+      const pDup = fetch('/api/memory/duplicates');
+      const [r, r2, rdup] = await Promise.all([pList, pSup, pDup]);
+
       const data = await r.json();
       _memAll = data.memories || [];
       _memTotal = (typeof data.total === 'number') ? data.total : null;
@@ -309,7 +766,6 @@ export async function loadMemories() {
       // 列表默认已过滤掉合并过的条目，这里单独再拉一次带 include_superseded，
       // 供「已合并」视图展示与撤销——否则那个视图永远是空的。
       try {
-        const r2 = await fetch('/api/memory?offset=0&limit=' + MEM_FETCH_LIMIT + '&include_superseded=true');
         const d2 = await r2.json();
         _memSupersededRows = (d2.memories || []).filter(m => m.superseded_by);
         _memSupersededRows.forEach(m => {
@@ -318,7 +774,7 @@ export async function loadMemories() {
       } catch (e2) {
         _memSupersededRows = [];
       }
-      _memDupGroups = await fetchDupGroups(_memAll);
+      _memDupGroups = await fetchDupGroups(_memAll, rdup);
     }
     // 选中的那条如果已经不在数据里，清掉选中态
     const all = _memQuery ? _memHits : _memAll;
@@ -740,13 +1196,15 @@ function bindMemTabs() {
       if (listPane) listPane.style.display = view === 'list' ? 'flex' : 'none';
       if (graphPane) graphPane.style.display = view === 'graph' ? 'flex' : 'none';
       if (view === 'graph') {
-        // 容器刚变可见，尺寸为 0 时 vis-network 画不出来，等一帧再加载
+        // 容器刚变可见时尺寸还是 0，等一帧拿到真实宽高再建渲染器
         setTimeout(() => {
           Promise.resolve(loadGraph()).catch(() => {});
         }, 60);
       } else if (view === 'list' && !_memAll.length && !_memHits.length) {
         loadMemories();
       }
+      // 3D 只在图谱视图里跑 rAF：切回列表就停，别让它在后台空转烧 CPU
+      if (view !== 'graph' && _g3) _g3.stop();
     };
   });
 }
