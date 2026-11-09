@@ -36,8 +36,6 @@ node_modules/
 # ---- 桌面端构建产物 ----
 apps/desktop/dist/
 apps/desktop/release/
-# install-stamp.json（write-build-stamp.mjs 生成的安装标记，每次构建都会变）
-apps/desktop/build/
 
 # ---- 工作区临时数据 ----
 .workbuddy/tmp/
