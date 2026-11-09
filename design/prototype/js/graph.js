@@ -46,32 +46,12 @@ function _loadVisNetwork() {
 }
 
 function _ensureGraphContainer() {
-  // 已有 .graph-main 容器则复用；否则在 page-memory 内自建图谱面板
-  let main = document.querySelector('.graph-main');
-  if (main) return main;
-  const page = document.getElementById('page-memory');
-  if (!page) return null;
-  const body = page.querySelector('.page-body') || page;
-  // 避免重复注入
-  main = document.getElementById('vis-graph-canvas-wrap');
-  if (main) return main;
-
-  const wrap = document.createElement('div');
-  wrap.id = 'vis-graph-canvas-wrap';
-  wrap.style.cssText = 'display:flex;gap:14px;height:460px;margin-bottom:14px;';
-  wrap.innerHTML =
-    '<div style="flex:1;position:relative;border:1px solid var(--ml-card-border,' +
-    ');border-radius:15px;background:rgba(10,14,26,.55);overflow:hidden" id="vis-graph-canvas"></div>' +
-    '<div style="width:260px;flex-shrink:0;border:1px solid var(--ml-card-border);' +
-    'border-radius:15px;padding:14px;overflow-y:auto;background:rgba(10,14,26,.45)" id="mem-detail">' +
-    '<div style="font-weight:700;margin-bottom:9px;font-size:13px">记忆详情</div>' +
-    '<div style="font-size:12px;color:var(--ml-text-faint)">点击节点查看关联实体与来源。</div></div>';
-  body.insertBefore(wrap, body.firstChild);
-  return wrap.querySelector('#vis-graph-canvas');
+  // 记忆中心「实体图谱」视图里的静态容器（index.html 已声明，不再动态注入）
+  return document.getElementById('vis-graph-canvas');
 }
 
 function _renderDetailPanel(nodeId) {
-  const panel = document.getElementById('mem-detail');
+  const panel = document.getElementById('mem-graph-detail');
   if (!panel || !_rawGraph) return;
   const nodes = _rawGraph.nodes || [];
   const edges = _rawGraph.edges || [];
@@ -101,13 +81,18 @@ function _renderDetailPanel(nodeId) {
 export async function loadGraph() {
   const d = await jget('/api/graph');
   if (!d || !d.nodes) {
-    const dd = document.getElementById('mem-detail');
+    const dd = document.getElementById('mem-graph-detail');
     if (dd) dd.innerHTML = '<div style="font-weight:700;margin-bottom:9px;font-size:13px">记忆详情</div><div style="font-size:12px;color:var(--ml-text-faint)">图谱后端暂不可用</div>';
     return;
   }
   _rawGraph = d;
-  const countEl = document.querySelector('.graph-main > div');
-  if (countEl) countEl.textContent = (d.fallback ? '示例图谱 · ' : '') + d.nodes.length + ' 实体 · ' + (d.edges ? d.edges.length : 0) + ' 关系';
+  const countEl = document.getElementById('mem-graph-detail');
+  if (countEl) {
+    countEl.innerHTML = '<div style="font-weight:700;margin-bottom:8px;font-size:13px">实体图谱</div>' +
+      '<div style="font-size:11.5px;color:var(--ml-text-faint);line-height:1.8">' +
+      (d.fallback ? '示例图谱 · ' : '') + d.nodes.length + ' 实体 · ' + (d.edges ? d.edges.length : 0) +
+      ' 关系<br>点击节点查看关联实体与来源。</div>';
+  }
 
   if (!d.nodes.length) return;
 
@@ -175,21 +160,28 @@ export async function loadGraph() {
     });
   } catch (e) {
     // CDN 失败降级为文字列表
-    const dd = document.getElementById('mem-detail');
+    const dd = document.getElementById('mem-graph-detail');
     if (dd) dd.innerHTML = '<div style="font-weight:700;margin-bottom:9px;font-size:13px">记忆详情</div>' +
       '<div style="font-size:12px;color:var(--ml-warn)">图谱可视化库加载失败，显示实体列表：</div>' +
       d.nodes.slice(0, 15).map(n => '<div class="mem-item"><span class="mem-cat" style="color:' + (n.color || '#94a3b8') + '">●</span> ' + esc(String(n.label || n.id)) + '</div>').join('');
   }
 }
 
-/* ── 记忆管理页（mem-list / mem-cats / mem-search） ────── */
-let _memories = [];
-let _memCat = 'all';
+/* ── 记忆中心：概览 / 列表 / 详情 三栏 ─────────────────── */
+let _memAll = [];            // 浏览态：一次拉满的全量记忆
+let _memHits = [];           // 搜索态：后端语义检索结果
 let _memQuery = '';
+let _memView = 'all';        // 'all' | 'cat:<分类>' | 'dup'
+let _memSelected = null;     // 当前选中记忆 id
+let _memDupGroups = [];      // 疑似重复分组 [{ids:[], items:[]}]
 let _memTotal = null;
-let _memOffset = 0;
-let _memHasMore = false;
-const MEM_PAGE_SIZE = 60;
+let _memEditingId = null;
+const MEM_FETCH_LIMIT = 200; // 浏览态一次拉取的条数（后端上限 200）
+
+const CAT_ORDER = ['用户', '实验', '材料', '结论', '其他'];
+const CAT_COLORS = {
+  用户: '#38bdf8', 实验: '#34d399', 材料: '#818cf8', 结论: '#fbbf24', 其他: '#94a3b8',
+};
 /** source_type → 人话。与 dashboard 的 MemoryPage 保持同一套语义。 */
 const SOURCE_LABELS = {
   user: '用户陈述',
@@ -197,13 +189,10 @@ const SOURCE_LABELS = {
   agent_inference: 'Agent 推断',
   imported_web: '网络导入',
 };
-/** 当前正在编辑的记忆 id；null 表示弹窗处于「新增」态。 */
-let _memEditingId = null;
 
-/** 从第一页重新加载（进入记忆页 / 刷新按钮 / 搜索 / 删除后调用）。 */
+/** 进入记忆页 / 刷新时调用：清掉选中态再重载。 */
 export function reloadMemories() {
-  _memOffset = 0;
-  _memories = [];
+  _memSelected = null;
   return loadMemories();
 }
 
@@ -213,54 +202,108 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+/* 相似度聚类：把"同一件事写了多遍"的记忆归成一组，供去重治理使用。
+   朴素二元组 Jaccard 足够用——127 条两两比较不到 1 万次，毫秒级。 */
+function _normForSim(s) {
+  return String(s || '')
+    .replace(/^\[[^\]]{1,8}\]/, '')
+    .replace(/[\s\u3000]/g, '')
+    .replace(/[，。；：、！？·“”"'（）()【】\[\],.;:!?\-]/g, '')
+    .toLowerCase();
+}
+function _bigrams(s) {
+  const g = new Set();
+  for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+  return g;
+}
+function _simScore(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  a.forEach(x => { if (b.has(x)) inter++; });
+  return inter / (a.size + b.size - inter);
+}
+/** 返回疑似重复分组（每组 ≥2 条），组内按相似度从高到低。 */
+function computeDupGroups(items, threshold) {
+  const th = typeof threshold === 'number' ? threshold : 0.5;
+  const grams = items.map(m => _bigrams(_normForSim(m.memory)));
+  const parent = items.map((_, i) => i);
+  const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const union = (i, j) => { const a = find(i), b = find(j); if (a !== b) parent[b] = a; };
+  const pairs = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const sc = _simScore(grams[i], grams[j]);
+      if (sc >= th) { union(i, j); pairs.push({ i, j, sc }); }
+    }
+  }
+  const buckets = new Map();
+  items.forEach((m, i) => {
+    const root = find(i);
+    if (!buckets.has(root)) buckets.set(root, []);
+    buckets.get(root).push({ item: m, idx: i });
+  });
+  const groups = [];
+  buckets.forEach(list => {
+    if (list.length < 2) return;
+    let best = 0;
+    pairs.forEach(p => {
+      if (find(p.i) === find(list[0].idx)) best = Math.max(best, p.sc);
+    });
+    groups.push({
+      ids: list.map(x => String(x.item.id || '')),
+      items: list.map(x => x.item),
+      score: best,
+    });
+  });
+  groups.sort((a, b) => b.items.length - a.items.length || b.score - a.score);
+  return groups;
+}
+
 export async function loadMemories() {
   const list = document.getElementById('mem-list');
-  if (list && _memOffset === 0) list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">加载中…</div>';
+  if (list) list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">加载中…</div>';
   try {
-    const url = _memQuery
-      ? '/api/memory?q=' + encodeURIComponent(_memQuery) + '&limit=' + MEM_PAGE_SIZE
-      : '/api/memory?offset=' + _memOffset + '&limit=' + MEM_PAGE_SIZE;
-    const r = await fetch(url);
-    const data = await r.json();
-    const incoming = data.memories || [];
-    _memories = _memOffset === 0 ? incoming : _memories.concat(incoming);
-    _memTotal = (typeof data.total === 'number') ? data.total : null;
-    _memHasMore = Boolean(data.has_more);
-    const cnt = document.getElementById('mem-count');
-    if (cnt) {
-      if (_memQuery) {
-        cnt.textContent = (_memTotal !== null ? '命中 ' + _memTotal + ' 条' : _memories.length + ' 条结果') + ' · 语义检索';
-      } else if (_memTotal !== null) {
-        cnt.textContent = '共 ' + _memTotal + ' 条 · 已显示 ' + _memories.length + ' 条';
-      } else {
-        cnt.textContent = _memories.length + ' 条记忆';
-      }
+    if (_memQuery) {
+      const r = await fetch('/api/memory?q=' + encodeURIComponent(_memQuery) + '&limit=60');
+      const data = await r.json();
+      _memHits = data.memories || [];
+      _memTotal = (typeof data.total === 'number') ? data.total : null;
+    } else {
+      const r = await fetch('/api/memory?offset=0&limit=' + MEM_FETCH_LIMIT);
+      const data = await r.json();
+      _memAll = data.memories || [];
+      _memTotal = (typeof data.total === 'number') ? data.total : null;
+      _memDupGroups = computeDupGroups(_memAll, 0.5);
     }
-    renderMemCats();
-    renderMemories();
+    // 选中的那条如果已经不在数据里，清掉选中态
+    const all = _memQuery ? _memHits : _memAll;
+    if (_memSelected && !all.some(m => String(m.id) === _memSelected)) _memSelected = null;
+    renderOverview();
+    renderRows();
+    renderDetail();
   } catch (e) {
-    if (list) list.innerHTML = '<div style="color:var(--ml-danger);font-size:13px;padding:40px;text-align:center">加载失败：' + esc(e.message) + '</div>' +
-      '<div style="text-align:center"><button class="btn btn-ghost btn-sm" onclick="loadMemories()">重试</button></div>';
+    if (list) {
+      list.innerHTML = '<div style="color:var(--ml-danger);font-size:13px;padding:40px;text-align:center">加载失败：' +
+        escapeHtml(e.message) + '</div>' +
+        '<div style="text-align:center"><button class="btn btn-ghost btn-sm" onclick="loadMemories()">重试</button></div>';
+    }
   }
 }
 
-function renderMemCats() {
-  const cats = {};
-  _memories.forEach(m => { cats[m.category] = (cats[m.category] || 0) + 1; });
-  const box = document.getElementById('mem-cats');
-  if (!box) return;
-  const order = ['用户', '实验', '材料', '结论', '其他'];
-  let html = '<div class="mem-cat' + (_memCat === 'all' ? ' active' : '') + '" data-cat="all">全部<span class="mc-count">' + _memories.length + '</span></div>';
-  order.forEach(c => {
-    if (cats[c]) html += '<div class="mem-cat' + (_memCat === c ? ' active' : '') + '" data-cat="' + c + '">' + c + '<span class="mc-count">' + cats[c] + '</span></div>';
-  });
-  Object.keys(cats).forEach(c => {
-    if (!order.includes(c)) html += '<div class="mem-cat' + (_memCat === c ? ' active' : '') + '" data-cat="' + c + '">' + c + '<span class="mc-count">' + cats[c] + '</span></div>';
-  });
-  box.innerHTML = html;
-  box.querySelectorAll('.mem-cat').forEach(el => {
-    el.onclick = () => { _memCat = el.dataset.cat; renderMemCats(); renderMemories(); };
-  });
+/** 当前视图下要展示的记忆。 */
+function currentItems() {
+  const all = _memQuery ? _memHits : _memAll;
+  if (_memQuery) return all;
+  if (_memView === 'dup') {
+    const ids = new Set();
+    _memDupGroups.forEach(g => g.ids.forEach(id => ids.add(id)));
+    return all.filter(m => ids.has(String(m.id)));
+  }
+  if (_memView.indexOf('cat:') === 0) {
+    const cat = _memView.slice(4);
+    return all.filter(m => (m.category || '其他') === cat);
+  }
+  return all;
 }
 
 function memDate(s) {
@@ -279,83 +322,201 @@ function memDateTime(s) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
-/** 溯源标签：来源类型 + 置信度；都没有时返回空串。 */
-function memProvenance(m) {
-  let html = '';
-  if (m.source_type) {
-    const label = SOURCE_LABELS[m.source_type] || m.source_type;
-    html += '<span class="mc-src-tag">' + escapeHtml(label) + '</span>';
+/** 列表上方的状态行（总数 / 当前显示 / 搜索态）。 */
+function statusLine() {
+  const box = document.getElementById('mem-count');
+  const tabCount = document.getElementById('mt-list-count');
+  const all = _memQuery ? _memHits : _memAll;
+  const shown = currentItems().length;
+  const totalN = _memTotal !== null ? _memTotal : all.length;
+  if (tabCount) tabCount.textContent = totalN;
+  if (!box) return;
+  let html;
+  if (_memQuery) {
+    html = '<span>语义检索命中 <b style="color:var(--ml-text)">' + totalN + '</b> 条</span>' +
+      '<span>· 已显示 <b style="color:var(--ml-text)">' + shown + '</b></span>';
+  } else {
+    html = '<span>共 <b style="color:var(--ml-text)">' + totalN + '</b> 条</span>' +
+      '<span>· 当前显示 <b style="color:var(--ml-text)">' + shown + '</b></span>';
+    if (_memTotal !== null && _memTotal > all.length) {
+      html += '<span style="color:var(--ml-warn)">· 仅加载前 ' + all.length + ' 条</span>';
+    }
   }
-  if (typeof m.confidence === 'number') {
-    html += '<span class="mc-conf">置信度 ' + Math.round(m.confidence * 100) + '%</span>';
-  }
-  return html;
+  box.innerHTML = html;
 }
 
-function renderMemories() {
-  const list = document.getElementById('mem-list');
-  if (!list) return;
-  const filtered = _memCat === 'all' ? _memories : _memories.filter(m => m.category === _memCat);
-  if (!filtered.length) {
-    list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">' + (_memQuery ? '没有匹配的记忆' : '暂无记忆') + '</div>';
-    return;
-  }
-  let html = filtered.map(m => {
-    const cat = m.category || '其他';
-    const score = m.score ? (m.score * 100).toFixed(0) + '%' : '';
-    const date = memDate(m.created_at);
-    const ref = m.source_ref ? String(m.source_ref) : '';
-    const detail = '<div class="mc-detail">' +
-      '<div>ID · <span style="color:var(--ml-text)">' + escapeHtml(String(m.id || '')) + '</span></div>' +
-      (m.created_at ? '<div>创建于 · ' + memDateTime(m.created_at) + '</div>' : '') +
-      (m.updated_at ? '<div>更新于 · ' + memDateTime(m.updated_at) + '</div>' : '') +
-      (ref ? '<div>来源引用 · ' + escapeHtml(ref) + '</div>' : '') +
-      (typeof m.confidence === 'number' ? '<div>置信度 · ' + Math.round(m.confidence * 100) + '%（' + escapeHtml(m.source_type || 'unknown') + '）</div>' : '') +
-      '</div>';
-    return '<div class="mem-card" data-mid="' + escapeHtml(String(m.id || '')) + '">' +
-      '<div class="mc-head"><span class="mc-tag cat-' + cat + '">' + cat + '</span>' +
-      memProvenance(m) +
-      (date ? '<span class="mc-date">' + date + '</span>' : '') +
-      (score ? '<span class="mc-score">相关度 ' + score + '</span>' : '') +
-      '</div>' +
-      '<div class="mc-text">' + escapeHtml(m.memory) + '</div>' +
-      (ref ? '<div class="mc-foot">来源 · ' + escapeHtml(ref.length > 90 ? ref.slice(0, 90) + '…' : ref) + '</div>' : '') +
-      detail +
-      '<button class="mc-edit" data-id="' + escapeHtml(String(m.id || '')) + '" title="编辑">✎</button>' +
-      '<button class="mc-del" data-id="' + escapeHtml(String(m.id || '')) + '" title="删除">✕</button>' +
+/** 左栏：总数 + 分类占比 + 治理入口。计数基于全量数据，不是当前页。 */
+function renderOverview() {
+  const box = document.getElementById('mem-overview');
+  if (!box) return;
+  const all = _memQuery ? _memHits : _memAll;
+  const counts = {};
+  all.forEach(m => { const c = m.category || '其他'; counts[c] = (counts[c] || 0) + 1; });
+  const base = all.length || 1;
+  const catRows = CAT_ORDER.map(c => {
+    const n = counts[c] || 0;
+    const pct = Math.round(n / base * 100);
+    const active = _memView === 'cat:' + c;
+    return '<div class="mc-ov-cat' + (active ? ' active' : '') + '" data-cat="' + c + '">' +
+      '<div class="row"><span>' + c + '</span><span>' + n + '</span></div>' +
+      '<div class="bar"><div class="fill" style="width:' + pct + '%;background:' + CAT_COLORS[c] + '"></div></div>' +
       '</div>';
   }).join('');
-  if (_memHasMore && !_memQuery) {
-    html += '<div style="padding:16px 0 8px;text-align:center"><button class="btn btn-ghost btn-sm" id="btn-mem-more">加载更多（已显示 ' + filtered.length + (_memTotal !== null ? ' / ' + _memTotal : '') + ' 条）</button></div>';
+  const extra = Object.keys(counts).filter(c => CAT_ORDER.indexOf(c) < 0);
+  const extraRows = extra.map(c => '<div class="mc-ov-cat' + (_memView === 'cat:' + c ? ' active' : '') +
+    '" data-cat="' + escapeHtml(c) + '"><div class="row"><span>' + escapeHtml(c) + '</span><span>' +
+    counts[c] + '</span></div></div>').join('');
+
+  const noSrc = all.filter(m => !m.source_type).length;
+  const dupGroups = _memQuery ? 0 : _memDupGroups.length;
+  const dupItems = _memQuery ? 0 : _memDupGroups.reduce((s, g) => s + g.items.length, 0);
+
+  box.innerHTML =
+    '<div class="mc-ov-hero"><div class="n">' + (_memTotal !== null ? _memTotal : all.length) + '</div>' +
+    '<div class="l">条记忆 · Mem0 语义检索</div></div>' +
+    '<div class="mc-ov-sec"><div class="t">分类</div>' +
+    '<div class="mc-ov-cat' + (_memView === 'all' ? ' active' : '') + '" data-cat="all">' +
+    '<div class="row"><span>全部</span><span>' + all.length + '</span></div>' +
+    '<div class="bar"><div class="fill" style="width:100%;background:var(--ml-grad)"></div></div></div>' +
+    catRows + extraRows + '</div>' +
+    '<div class="mc-ov-sec"><div class="t">治理</div>' +
+    '<div class="mc-gov-item" data-gov="dup"><span class="k">疑似重复</span>' +
+    '<span class="v">' + dupGroups + ' 组 / ' + dupItems + ' 条</span></div>' +
+    '<div class="mc-gov-item" data-gov="nosrc"><span class="k">无来源标记</span>' +
+    '<span class="v">' + noSrc + ' 条</span></div>' +
+    '</div>';
+
+  box.querySelectorAll('.mc-ov-cat').forEach(el => {
+    el.onclick = () => {
+      const c = el.dataset.cat;
+      _memView = c === 'all' ? 'all' : 'cat:' + c;
+      renderOverview(); renderRows();
+    };
+  });
+  box.querySelectorAll('.mc-gov-item').forEach(el => {
+    el.onclick = () => {
+      if (el.dataset.gov === 'dup') {
+        if (!_memDupGroups.length) { alert('当前没有检测到疑似重复的记忆。'); return; }
+        _memView = 'dup';
+      } else {
+        _memView = 'all';
+      }
+      renderOverview(); renderRows();
+    };
+  });
+}
+
+function rowHtml(m) {
+  const cat = m.category || '其他';
+  const color = CAT_COLORS[cat] || '#94a3b8';
+  const meta = ['<span class="mr-cat" style="background:' + color + '22;color:' + color + '">' + escapeHtml(cat) + '</span>'];
+  if (m.source_type) meta.push('<span>' + escapeHtml(SOURCE_LABELS[m.source_type] || m.source_type) + '</span>');
+  if (typeof m.confidence === 'number') meta.push('<span>置信度 ' + Math.round(m.confidence * 100) + '%</span>');
+  if (m.created_at) meta.push('<span>' + memDate(m.created_at) + '</span>');
+  if (m.score) meta.push('<span>相关度 ' + (m.score * 100).toFixed(0) + '%</span>');
+  const sel = String(m.id) === _memSelected ? ' sel' : '';
+  const idEsc = escapeHtml(String(m.id || ''));
+  return '<div class="mem-row' + sel + '" data-mid="' + idEsc + '">' +
+    '<span class="mr-bar" style="background:' + color + '"></span>' +
+    '<div class="mr-main"><div class="mr-text">' + escapeHtml(m.memory) + '</div>' +
+    '<div class="mr-meta">' + meta.join('') + '</div></div>' +
+    '<div class="mr-ops"><button class="edit" data-id="' + idEsc + '" title="编辑">✎</button>' +
+    '<button class="del" data-id="' + idEsc + '" title="删除">✕</button></div>' +
+    '</div>';
+}
+
+/** 中栏：行式列表。重复视图下按组分段显示。 */
+function renderRows() {
+  const list = document.getElementById('mem-list');
+  if (!list) return;
+  statusLine();
+  const items = currentItems();
+  if (!items.length) {
+    list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">' +
+      (_memQuery ? '没有匹配的记忆' : '暂无记忆') + '</div>';
+    return;
+  }
+  let html = '';
+  if (_memView === 'dup' && !_memQuery) {
+    _memDupGroups.forEach((g, gi) => {
+      html += '<div style="font-size:11px;color:var(--ml-text-faint);padding:10px 2px 3px">' +
+        '重复组 ' + (gi + 1) + ' · ' + g.items.length + ' 条 · 相似度 ' + Math.round(g.score * 100) + '%</div>';
+      g.items.forEach(m => { html += rowHtml(m); });
+    });
+  } else {
+    items.forEach(m => { html += rowHtml(m); });
   }
   list.innerHTML = html;
-  // 点正文展开/收起溯源明细（ID / 时间 / 完整来源引用）
-  list.querySelectorAll('.mem-card .mc-text').forEach(el => {
-    el.onclick = () => {
-      const detail = el.parentElement.querySelector('.mc-detail');
-      if (detail) detail.classList.toggle('open');
-    };
+  list.querySelectorAll('.mem-row').forEach(el => {
+    el.onclick = () => { _memSelected = el.dataset.mid; renderRows(); renderDetail(); };
   });
-  list.querySelectorAll('.mc-edit').forEach(btn => {
+  list.querySelectorAll('.mr-ops .edit').forEach(btn => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
-      const item = _memories.find(x => String(x.id) === btn.dataset.id);
-      openMemModal(item);
+      const item = currentItems().find(x => String(x.id) === btn.dataset.id);
+      if (item) openMemModal(item);
     };
   });
-  list.querySelectorAll('.mc-del').forEach(btn => {
-    btn.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (!confirm('确定删除这条记忆？')) return;
-      try {
-        await fetch('/api/memory/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' });
-        _memOffset = 0; _memories = [];
-        loadMemories();
-      } catch (e) { alert('删除失败：' + e.message); }
-    };
+  list.querySelectorAll('.mr-ops .del').forEach(btn => {
+    btn.onclick = (ev) => { ev.stopPropagation(); deleteMemory(btn.dataset.id); };
   });
-  const moreBtn = document.getElementById('btn-mem-more');
-  if (moreBtn) moreBtn.onclick = () => { _memOffset += MEM_PAGE_SIZE; loadMemories(); };
+}
+
+/** 右栏：选中记忆的详情 + 相似记忆 + 操作。 */
+function renderDetail() {
+  const panel = document.getElementById('mem-detail-panel');
+  if (!panel) return;
+  const items = currentItems();
+  const item = _memSelected ? items.find(m => String(m.id) === _memSelected) : null;
+  if (!item) {
+    panel.innerHTML = '<div class="d-empty">选中列表中任意一条记忆<br>查看完整内容、来源与相似记忆</div>';
+    return;
+  }
+  const cat = item.category || '其他';
+  const color = CAT_COLORS[cat] || '#94a3b8';
+  const tags = ['<span class="mc-badge" style="background:' + color + '22;color:' + color + ';border-color:' + color + '44">' + escapeHtml(cat) + '</span>'];
+  if (item.source_type) tags.push('<span class="mc-badge">' + escapeHtml(SOURCE_LABELS[item.source_type] || item.source_type) + '</span>');
+  if (typeof item.confidence === 'number') tags.push('<span class="mc-badge">置信度 ' + Math.round(item.confidence * 100) + '%</span>');
+  if (item.score) tags.push('<span class="mc-badge">相关度 ' + (item.score * 100).toFixed(0) + '%</span>');
+
+  const sim = _memDupGroups.find(g => g.ids.indexOf(String(item.id)) >= 0);
+  const simOthers = sim ? sim.items.filter(m => String(m.id) !== String(item.id)) : [];
+
+  panel.innerHTML =
+    '<div class="d-tags">' + tags.join('') + '</div>' +
+    '<div class="d-text">' + escapeHtml(item.memory) + '</div>' +
+    '<div class="d-meta">' +
+    (item.source_ref ? '<div><span class="k">来源引用</span><span class="v">' + escapeHtml(item.source_ref) + '</span></div>' : '') +
+    (item.created_at ? '<div><span class="k">创建于</span><span class="v">' + memDateTime(item.created_at) + '</span></div>' : '') +
+    (item.updated_at ? '<div><span class="k">更新于</span><span class="v">' + memDateTime(item.updated_at) + '</span></div>' : '') +
+    '<div><span class="k">ID</span><span class="v">' + escapeHtml(String(item.id || '')) + '</span></div>' +
+    '</div>' +
+    (simOthers.length ? '<div class="mc-ov-sec"><div class="t">相似记忆 ' + simOthers.length + ' 条</div><div class="mc-sim">' +
+      simOthers.map(m => '<div class="s" data-mid="' + escapeHtml(String(m.id)) + '">' + escapeHtml(m.memory) + '</div>').join('') +
+      '</div></div>' : '') +
+    '<div class="d-ops">' +
+    '<button class="btn btn-ghost" id="mem-detail-edit">编辑</button>' +
+    '<button class="btn btn-ghost" id="mem-detail-del" style="color:#ef4444">删除</button>' +
+    '</div>';
+
+  const eb = document.getElementById('mem-detail-edit');
+  if (eb) eb.onclick = () => openMemModal(item);
+  const db = document.getElementById('mem-detail-del');
+  if (db) db.onclick = () => deleteMemory(String(item.id));
+  panel.querySelectorAll('.mc-sim .s').forEach(el => {
+    el.onclick = () => { _memSelected = el.dataset.mid; renderRows(); renderDetail(); };
+  });
+}
+
+async function deleteMemory(id) {
+  if (!confirm('确定删除这条记忆？删除后不可恢复。')) return;
+  try {
+    await fetch('/api/memory/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (_memSelected === id) _memSelected = null;
+    await loadMemories();
+  } catch (e) {
+    alert('删除失败：' + e.message);
+  }
 }
 
 /** 打开记忆弹窗：item 为空 → 新增；传入记忆 → 编辑预填。 */
@@ -387,7 +548,15 @@ export function bindMemoryUI() {
   const search = document.getElementById('mem-search');
   if (search) {
     let t;
-    search.oninput = () => { clearTimeout(t); t = setTimeout(() => { _memQuery = search.value.trim(); _memOffset = 0; _memories = []; loadMemories(); }, 400); };
+    search.oninput = () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        _memQuery = search.value.trim();
+        _memSelected = null;
+        _memView = 'all';
+        loadMemories();
+      }, 400);
+    };
   }
   const addBtn = document.getElementById('btn-add-mem');
   if (addBtn) addBtn.onclick = () => openMemModal(null);
@@ -423,7 +592,32 @@ export function bindMemoryUI() {
     }
   };
   const refreshBtn = document.getElementById('btn-refresh-mem');
-  if (refreshBtn) refreshBtn.onclick = () => { _memOffset = 0; _memories = []; loadMemories(); };
+  if (refreshBtn) refreshBtn.onclick = () => reloadMemories();
   const modal = document.getElementById('mem-modal');
   if (modal) modal.onclick = (e) => { if (e.target === modal) closeMemModal(); };
+  bindMemTabs();
+}
+
+/** 记忆列表 / 实体图谱两个视图切换（图谱按需懒加载）。 */
+function bindMemTabs() {
+  const tabs = document.querySelectorAll('.mem-tab[data-memview]');
+  if (!tabs.length) return;
+  tabs.forEach(tab => {
+    tab.onclick = () => {
+      const view = tab.dataset.memview;
+      tabs.forEach(t => t.classList.toggle('active', t === tab));
+      const listPane = document.getElementById('mem-pane-list');
+      const graphPane = document.getElementById('mem-pane-graph');
+      if (listPane) listPane.style.display = view === 'list' ? 'flex' : 'none';
+      if (graphPane) graphPane.style.display = view === 'graph' ? 'flex' : 'none';
+      if (view === 'graph') {
+        // 容器刚变可见，尺寸为 0 时 vis-network 画不出来，等一帧再加载
+        setTimeout(() => {
+          Promise.resolve(loadGraph()).catch(() => {});
+        }, 60);
+      } else if (view === 'list' && !_memAll.length && !_memHits.length) {
+        loadMemories();
+      }
+    };
+  });
 }
