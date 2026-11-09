@@ -40,7 +40,7 @@ import {
   cancelPaperRun, delPaper, toKb, fillPaperProgress, bindPaperUI, renderPaperPanel,
   createPaper,
 } from './paper.js';
-import { loadMemory, loadGraph, loadMemories, bindMemoryUI } from './graph.js';
+import { loadMemory, loadGraph, loadMemories, reloadMemories, bindMemoryUI } from './graph.js';
 import { loadSettings, saveSettings, testConnection, refreshModels } from './settings.js';
 import {
   loadExpTemplates, selectExpTpl, generateExp, saveExpRecord,
@@ -237,7 +237,7 @@ function bindEvents() {
   // 切到记忆页时自动加载
   document.addEventListener('click', (e) => {
     const nav = e.target.closest('.nav-item[data-page="memory"]');
-    if (nav) setTimeout(() => loadMemories(), 50);
+    if (nav) setTimeout(() => reloadMemories(), 50);
   });
 
   bindMemoryUI();

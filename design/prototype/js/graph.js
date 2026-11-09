@@ -186,6 +186,17 @@ export async function loadGraph() {
 let _memories = [];
 let _memCat = 'all';
 let _memQuery = '';
+let _memTotal = null;
+let _memOffset = 0;
+let _memHasMore = false;
+const MEM_PAGE_SIZE = 60;
+
+/** 从第一页重新加载（进入记忆页 / 刷新按钮 / 搜索 / 删除后调用）。 */
+export function reloadMemories() {
+  _memOffset = 0;
+  _memories = [];
+  return loadMemories();
+}
 
 function escapeHtml(s) {
   const d = document.createElement('div');
@@ -195,14 +206,27 @@ function escapeHtml(s) {
 
 export async function loadMemories() {
   const list = document.getElementById('mem-list');
-  if (list) list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">加载中…</div>';
+  if (list && _memOffset === 0) list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">加载中…</div>';
   try {
-    const url = '/api/memory' + (_memQuery ? '?q=' + encodeURIComponent(_memQuery) : '');
+    const url = _memQuery
+      ? '/api/memory?q=' + encodeURIComponent(_memQuery) + '&limit=' + MEM_PAGE_SIZE
+      : '/api/memory?offset=' + _memOffset + '&limit=' + MEM_PAGE_SIZE;
     const r = await fetch(url);
     const data = await r.json();
-    _memories = data.memories || [];
+    const incoming = data.memories || [];
+    _memories = _memOffset === 0 ? incoming : _memories.concat(incoming);
+    _memTotal = (typeof data.total === 'number') ? data.total : null;
+    _memHasMore = Boolean(data.has_more);
     const cnt = document.getElementById('mem-count');
-    if (cnt) cnt.textContent = _memories.length + ' 条记忆 · Mem0 语义检索';
+    if (cnt) {
+      if (_memQuery) {
+        cnt.textContent = (_memTotal !== null ? '命中 ' + _memTotal + ' 条' : _memories.length + ' 条结果') + ' · 语义检索';
+      } else if (_memTotal !== null) {
+        cnt.textContent = '共 ' + _memTotal + ' 条 · 已显示 ' + _memories.length + ' 条';
+      } else {
+        cnt.textContent = _memories.length + ' 条记忆';
+      }
+    }
     renderMemCats();
     renderMemories();
   } catch (e) {
@@ -230,39 +254,56 @@ function renderMemCats() {
   });
 }
 
+function memDate(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return '';
+  const p = n => (n < 10 ? '0' + n : '' + n);
+  return (d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
 function renderMemories() {
   const list = document.getElementById('mem-list');
   if (!list) return;
   const filtered = _memCat === 'all' ? _memories : _memories.filter(m => m.category === _memCat);
   if (!filtered.length) {
-    list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">暂无记忆</div>';
+    list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">' + (_memQuery ? '没有匹配的记忆' : '暂无记忆') + '</div>';
     return;
   }
-  list.innerHTML = filtered.map(m => {
+  let html = filtered.map(m => {
     const cat = m.category || '其他';
     const score = m.score ? (m.score * 100).toFixed(0) + '%' : '';
+    const date = memDate(m.created_at);
     return '<div class="mem-card">' +
       '<div class="mc-head"><span class="mc-tag cat-' + cat + '">' + cat + '</span>' +
       (score ? '<span class="mc-score">相关度 ' + score + '</span>' : '') +
+      (date ? '<span class="mc-date" style="font-size:11px;color:var(--ml-text-faint);margin-left:auto;margin-right:8px">' + date + '</span>' : '') +
       '<button class="mc-del" data-id="' + m.id + '" title="删除">✕</button></div>' +
       '<div class="mc-text">' + escapeHtml(m.memory) + '</div></div>';
   }).join('');
+  if (_memHasMore && !_memQuery) {
+    html += '<div style="padding:16px 0 8px;text-align:center"><button class="btn btn-ghost btn-sm" id="btn-mem-more">加载更多（已显示 ' + filtered.length + (_memTotal !== null ? ' / ' + _memTotal : '') + ' 条）</button></div>';
+  }
+  list.innerHTML = html;
   list.querySelectorAll('.mc-del').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('确定删除这条记忆？')) return;
       try {
         await fetch('/api/memory/' + btn.dataset.id, { method: 'DELETE' });
+        _memOffset = 0; _memories = [];
         loadMemories();
       } catch (e) { alert('删除失败：' + e.message); }
     };
   });
+  const moreBtn = document.getElementById('btn-mem-more');
+  if (moreBtn) moreBtn.onclick = () => { _memOffset += MEM_PAGE_SIZE; loadMemories(); };
 }
 
 export function bindMemoryUI() {
   const search = document.getElementById('mem-search');
   if (search) {
     let t;
-    search.oninput = () => { clearTimeout(t); t = setTimeout(() => { _memQuery = search.value.trim(); loadMemories(); }, 400); };
+    search.oninput = () => { clearTimeout(t); t = setTimeout(() => { _memQuery = search.value.trim(); _memOffset = 0; _memories = []; loadMemories(); }, 400); };
   }
   const addBtn = document.getElementById('btn-add-mem');
   if (addBtn) addBtn.onclick = () => { const m = document.getElementById('mem-modal'); if (m) { m.classList.add('show'); document.getElementById('mem-new-text').focus(); } };
@@ -280,7 +321,7 @@ export function bindMemoryUI() {
     } catch (e) { alert('添加失败：' + e.message); }
   };
   const refreshBtn = document.getElementById('btn-refresh-mem');
-  if (refreshBtn) refreshBtn.onclick = () => loadMemories();
+  if (refreshBtn) refreshBtn.onclick = () => { _memOffset = 0; _memories = []; loadMemories(); };
   const modal = document.getElementById('mem-modal');
   if (modal) modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('show'); };
 }
