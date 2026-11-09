@@ -140,6 +140,120 @@ function _layoutBrain(nodes, edges) {
   return { nodes: out, edges: es };
 }
 
+/**
+ * 文本共现：不看抽取出的关系，只看"哪些实体同时出现在同一条记忆里"。
+ *
+ * 为什么需要第二个视角：抽取出的关系目前高度集中在用户节点上（31 条边 / 99），
+ * 图看起来像星形。共现完全由原文决定，能回答一个不同的问题——材料之间到底是
+ * 被一起讨论过，还是仅仅都被写到过。
+ *
+ * 长 label 先匹配并占位，避免「固态电解质」这段文字又被更短的 label 重复命中。
+ */
+function _buildCooccurrence(memList, layoutNodes) {
+  const cand = layoutNodes
+    .filter(n => String(n.label || '').length >= 2)
+    .map(n => ({ id: n.id, label: String(n.label) }))
+    .sort((a, b) => b.label.length - a.label.length);
+  const idx = new Map(layoutNodes.map((n, i) => [n.id, i]));
+  const pairs = new Map();
+  let usedMem = 0;
+
+  (memList || []).forEach(m => {
+    const text = String(m.memory || m.content || m.text || '');
+    if (!text) return;
+    let rest = text;
+    const hits = [];
+    cand.forEach(c => {
+      if (rest.indexOf(c.label) >= 0) {
+        hits.push(c.id);
+        rest = rest.split(c.label).join('\u0001'); // 占位，防止同一段被短 label 再吃一遍
+      }
+    });
+    if (hits.length < 2) return;
+    usedMem++;
+    for (let i = 0; i < hits.length; i++) {
+      for (let j = i + 1; j < hits.length; j++) {
+        const a = idx.get(hits[i]), b = idx.get(hits[j]);
+        if (a === undefined || b === undefined || a === b) continue;
+        const key = a < b ? a + '|' + b : b + '|' + a;
+        pairs.set(key, (pairs.get(key) || 0) + 1);
+      }
+    }
+  });
+
+  const out = [];
+  pairs.forEach((w, key) => {
+    const [a, b] = key.split('|').map(Number);
+    out.push({ a, b, w, label: '', cooc: true,
+               sx0: 0, sy0: 0, sx1: 0, sy1: 0, cxp: 0, cyp: 0, z: 0, sr: 0 });
+  });
+  out.sort((x, y) => y.w - x.w);
+  // 只留共现 ≥2 次的：偶发一次大多是句子碰巧同框，全画上会变成一团毛球
+  return { edges: out.filter(e => e.w >= 2).slice(0, 260), usedMem, total: out.length };
+}
+
+/** 换边集：重算每个节点的度数和邻接表，路径高亮一并清掉。 */
+function _applyEdges(st, mode) {
+  st.mode = mode;
+  if (mode === 'cooc') _ensureCooc(st);
+  const src = mode === 'cooc' ? ((st.cooc && st.cooc.edges) || []) : st.relEdges;
+  st.edges = src;
+  st.nodes.forEach(n => { n.deg = 0; });
+  st.nbr.clear();
+  st.nodes.forEach(n => st.nbr.set(n.id, new Set()));
+  src.forEach(e => {
+    const A = st.nodes[e.a], B = st.nodes[e.b];
+    if (!A || !B) return;
+    A.deg++; B.deg++;
+    st.nbr.get(A.id).add(B.id);
+    st.nbr.get(B.id).add(A.id);
+  });
+  st.pathFrom = null; st.pathTo = null;
+  st.pathNodes = null; st.pathEdges = null; st.pathLen = -1; st.pathLabels = null;
+}
+
+/** 共现边按记忆条数惰性重算：记忆是增量长出来的，条数变了就得重算一次。 */
+function _ensureCooc(st) {
+  const key = (_memAll || []).length;
+  if (st.cooc && st.coocKey === key) return st.cooc;
+  st.coocKey = key;
+  st.cooc = _buildCooccurrence(_memAll, st.nodes);
+  return st.cooc;
+}
+
+/** 无向图上的最短路径（BFS）。两点不连通时返回 null，而不是硬连一条假路径。 */
+function _bfsPath(st, from, to) {
+  if (!from || !to) return null;
+  const prev = new Map([[from, null]]);
+  const q = [from];
+  while (q.length) {
+    const cur = q.shift();
+    if (cur === to) break;
+    const ns = st.nbr.get(cur) || new Set();
+    for (const nb of ns) {
+      if (!prev.has(nb)) { prev.set(nb, cur); q.push(nb); }
+    }
+  }
+  if (!prev.has(to)) return null;
+  const path = [];
+  let cur = to;
+  while (cur) { path.unshift(cur); cur = prev.get(cur); }
+  return path;
+}
+
+/** 把 id 序列变成画线时要查的边 key（index 有序拼接，双向都能命中）。 */
+function _pathEdgeKeys(st, path) {
+  if (!path || path.length < 2) return null;
+  const at = new Map(st.nodes.map((n, i) => [n.id, i]));
+  const s = new Set();
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = at.get(path[i]), b = at.get(path[i + 1]);
+    if (a === undefined || b === undefined) continue;
+    s.add(Math.min(a, b) + '|' + Math.max(a, b));
+  }
+  return s;
+}
+
 function _ensureGraphContainer() {
   // 记忆中心「实体图谱」视图里的静态容器（index.html 已声明，不再动态注入）
   return document.getElementById('vis-graph-canvas');
@@ -227,12 +341,23 @@ function _renderLegend(panel, d) {
   // 结构诊断：度数分布是判断这份记忆结构健不健康最便宜的指标。
   // 孤立实体说明抽出来没连上（噪音，或抽取漏了关系）；单点支配的枢纽会把
   // 整张图压成星形，让人误以为"所有知识都以用户为中心"。
+  // 两种视图度数含义不同，一律按"当前这套边"算，不混用。
+  const mode = (_g3 && _g3.mode) || 'rel';
+  const cooc = (_g3 && _g3.cooc) || null;
+  const edgeCount = mode === 'cooc'
+    ? ((_g3 && _g3.edges) ? _g3.edges.length : 0)
+    : ((d.edges || []).length);
+
   const deg = new Map();
-  (d.edges || []).forEach(e => {
-    const a = String(e.source), b = String(e.target);
-    deg.set(a, (deg.get(a) || 0) + 1);
-    deg.set(b, (deg.get(b) || 0) + 1);
-  });
+  if (mode === 'cooc' && _g3 && _g3.nodes) {
+    _g3.nodes.forEach(n => deg.set(n.id, n.deg || 0));
+  } else {
+    (d.edges || []).forEach(e => {
+      const a = String(e.source), b = String(e.target);
+      deg.set(a, (deg.get(a) || 0) + 1);
+      deg.set(b, (deg.get(b) || 0) + 1);
+    });
+  }
   const nodes = d.nodes || [];
   const degOf = n => deg.get(String(n.id)) || 0;
   const isolated = nodes.filter(n => degOf(n) === 0);
@@ -249,26 +374,61 @@ function _renderLegend(panel, d) {
     (hint ? '<div style="font-size:10.5px;color:var(--ml-text-faint);line-height:1.5;margin-top:2px">' + hint + '</div>' : '') +
     '</div>';
 
+  const modeBar =
+    '<div style="display:flex;gap:6px;margin-bottom:10px">' +
+    [['rel', '语义关系'], ['cooc', '文本共现']].map(pair => {
+      const k = pair[0], name = pair[1], on = mode === k;
+      return '<button data-g3mode="' + k + '" style="flex:1;padding:5px 0;font-size:11.5px;' +
+        'cursor:pointer;border-radius:7px;font-family:inherit;' +
+        'border:1px solid ' + (on ? 'rgba(56,189,248,0.6)' : 'var(--ml-border)') + ';' +
+        'background:' + (on ? 'rgba(56,189,248,0.14)' : 'transparent') + ';' +
+        'color:' + (on ? '#7dd3fc' : 'var(--ml-text-dim)') + '">' + name + '</button>';
+    }).join('') + '</div>';
+
   panel.innerHTML =
     '<div style="font-weight:700;margin-bottom:10px;font-size:13px">实体图谱 · 3D 脑区</div>' +
+    modeBar +
     '<div style="font-size:11.5px;color:var(--ml-text-faint);line-height:1.75;margin-bottom:12px">' +
     (d.fallback ? '示例图谱 · ' : '') + (d.nodes || []).length + ' 实体 · ' +
-    ((d.edges || []).length) + ' 关系<br>拖拽旋转 · 滚轮缩放 · 单击看关联 · 双击聚焦</div>' +
+    edgeCount + (mode === 'cooc' ? ' 共现' : ' 关系') + '<br>' +
+    (mode === 'cooc'
+      ? '同一条记忆里被一起提到的实体相连，线越实同框次数越多'
+      : '拖拽旋转 · 滚轮缩放 · 单击看关联 · 双击聚焦') + '</div>' +
     rows +
     '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--ml-border)">' +
     '<div style="font-size:12px;font-weight:600;margin-bottom:4px">结构诊断</div>' +
     diagRow('孤立实体', isolated.length + ' 个',
       isolated.length
-        ? '没有任何关系，球面上用虚线小圈标出：' + isolated.slice(0, 3).map(n => esc(n.label)).join('、') +
+        ? (mode === 'cooc'
+            ? '没有任何一条记忆把它们和别的实体写在一起：'
+            : '没有任何关系，球面上用虚线小圈标出：') +
+          isolated.slice(0, 3).map(n => esc(n.label)).join('、') +
           (isolated.length > 3 ? ' 等' : '')
-        : '全部实体都连上了关系') +
+        : (mode === 'cooc' ? '每个实体都至少和别的实体同框过' : '全部实体都连上了关系')) +
     diagRow('最大枢纽', hub ? degOf(hub) + ' 条 · ' + esc(hub.label) : '—',
       hubDeg > 12 ? '连线高度集中，这张图会看起来像星形而不是网络' : '枢纽与其余实体差距不大') +
     diagRow('只连一条', leaf.length + ' / ' + nodes.length,
       '叶子节点占 ' + Math.round(leaf.length / total * 100) + '%，关系网还很浅') +
     '</div>' +
+    (mode === 'cooc' && cooc
+      ? '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--ml-border);' +
+        'font-size:10.5px;color:var(--ml-text-faint);line-height:1.6">' +
+        '口径：' + cooc.usedMem + ' 条记忆里至少提到 2 个实体，共 ' + cooc.total + ' 对同框，' +
+        '这里只画出现 ≥2 次的 ' + ((cooc.edges || []).length) + ' 对。</div>'
+      : '') +
     '<div style="margin-top:12px;font-size:11px;color:var(--ml-text-faint);line-height:1.7">' +
-    '每个光点是一个实体，光晕大小表示连接数；细线是实体之间的语义关系。</div>';
+    'Shift 点击两个实体可以量出它们在这张图里的最短路径。</div>';
+
+  panel.querySelectorAll('[data-g3mode]').forEach(btn => {
+    btn.onclick = () => {
+      const m = btn.dataset.g3mode;
+      if (!_g3 || _g3.mode === m) return;
+      _applyEdges(_g3, m);
+      _g3.sel = null; _g3.focus = null; _g3.hover = null;
+      _g3.paint();
+      _renderLegend(panel, d);
+    };
+  });
 }
 
 function _mountBrain(box, d, sig, prev) {
@@ -289,12 +449,6 @@ function _mountBrain(box, d, sig, prev) {
   box.appendChild(canvas);
 
   const layout = _layoutBrain(d.nodes || [], d.edges || []);
-  const nbr = new Map();
-  layout.nodes.forEach(n => nbr.set(n.id, new Set()));
-  layout.edges.forEach(e => {
-    nbr.get(layout.nodes[e.a].id).add(layout.nodes[e.b].id);
-    nbr.get(layout.nodes[e.b].id).add(layout.nodes[e.a].id);
-  });
 
   // 这一版新出现的实体：绘制时给它们几秒钟的扩散环，像神经元刚长出来
   const fresh = prevIds
@@ -303,7 +457,14 @@ function _mountBrain(box, d, sig, prev) {
 
   const st = {
     sig, canvas, box, ctx: canvas.getContext('2d'),
-    nodes: layout.nodes, edges: layout.edges, nbr,
+    nodes: layout.nodes, edges: layout.edges, nbr: new Map(),
+    relEdges: layout.edges,
+    // 视图沿用上一版：自动刷新重建时不该把用户切过去的共现视图甩回关系视图
+    mode: (old && old.mode === 'cooc') ? 'cooc' : 'rel',
+    cooc: (old && old.cooc) || null,
+    coocKey: (old && old.coocKey) || -1,
+    pathFrom: null, pathTo: null, pathNodes: null, pathEdges: null,
+    pathLen: -1, pathLabels: null,
     W: 0, H: 0, dpr: 1,
     yaw: old ? old.yaw : 0.45,
     pitch: old ? old.pitch : -0.18,
@@ -320,6 +481,8 @@ function _mountBrain(box, d, sig, prev) {
   _g3 = st;
   BRAIN_REGIONS.forEach(r => { st.sprites[r.key] = _makeNeuronSprite(r.color); });
   st.sprites._ = _makeNeuronSprite('#94a3b8');
+  // 度数、邻接表都从"当前这套边"推出来：换视图就是换一套边，这些必须跟着重算
+  _applyEdges(st, st.mode);
 
   st.resize = function () {
     const rect = box.getBoundingClientRect();
@@ -414,6 +577,33 @@ function _mountBrain(box, d, sig, prev) {
     if (wasDrag) return;
     const rect = canvas.getBoundingClientRect();
     const n = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+
+    // Shift 点击 = 量两点之间的距离：第一次定起点，第二次定终点并求出最短路径。
+    // 用"实际连过的边"来算，所以它回答的是"这两个概念在这个图里是怎么一路连上的"，
+    // 而不是靠语义相似度猜出来的关系。
+    if (e.shiftKey && n) {
+      if (!st.pathFrom || st.pathFrom === n.id) {
+        st.pathFrom = n.id; st.pathTo = null;
+        st.pathNodes = null; st.pathEdges = null; st.pathLen = -1; st.pathLabels = null;
+      } else {
+        const path = _bfsPath(st, st.pathFrom, n.id);
+        st.pathTo = n.id;
+        st.pathNodes = path ? new Set(path) : null;
+        st.pathEdges = path ? _pathEdgeKeys(st, path) : null;
+        st.pathLen = path ? path.length - 1 : -1;
+        st.pathLabels = path
+          ? path.map(id => { const x = st.nodes.find(q => q.id === id); return x ? x.label : id; })
+          : null;
+      }
+      st.sel = n.id; st.focus = null; st.hover = n.id;
+      st.paint();
+      _renderDetailPanel(n.id);
+      return;
+    }
+
+    // 普通点击：清掉上一次的路径高亮，回到"看邻居"的状态
+    st.pathFrom = null; st.pathTo = null;
+    st.pathNodes = null; st.pathEdges = null; st.pathLen = -1; st.pathLabels = null;
     st.focus = null;
     st.sel = n ? n.id : null;
     st.hover = n ? n.id : null;
@@ -424,6 +614,8 @@ function _mountBrain(box, d, sig, prev) {
   canvas.addEventListener('dblclick', e => {
     const rect = canvas.getBoundingClientRect();
     const n = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    st.pathFrom = null; st.pathTo = null;
+    st.pathNodes = null; st.pathEdges = null; st.pathLen = -1; st.pathLabels = null;
     if (!n) { st.focus = null; return; }
     st.sel = n.id;
     st.focus = st.focus === n.id ? null : n.id;
@@ -557,8 +749,19 @@ function _drawBrain(st, now) {
     const active = selId && (A.id === selId || B.id === selId);
     const dimmed = focus && !(A.id === focus || B.id === focus ||
                               (focusNbr && (focusNbr.has(A.id) || focusNbr.has(B.id))));
+    const onPath = st.pathEdges && st.pathEdges.has(Math.min(e.a, e.b) + '|' + Math.max(e.a, e.b));
     let alpha, width, color;
-    if (active) {
+    if (st.pathEdges) {
+      // 有路径时其余边一律压到几乎看不见：这条链路本身才是要看的东西
+      if (onPath) { alpha = 1; width = 2.6; color = 'rgba(56,189,248,0.95)'; }
+      else { alpha = 0.045; width = 0.7; color = 'rgba(120,150,190,0.6)'; }
+    } else if (e.cooc) {
+      // 共现边按同框次数加权：被一起讨论得越多，线越实
+      const wgt = Math.min(1, (e.w || 1) / 5);
+      alpha = 0.16 + 0.55 * wgt;
+      width = 0.9 + 1.8 * wgt;
+      color = 'rgba(56,189,248,0.9)';
+    } else if (active) {
       alpha = 0.92; width = 1.9; color = _rgba(B.color || '#38bdf8', 0.9);
     } else if (dimmed) {
       alpha = 0.05; width = 0.8; color = 'rgba(120,150,190,0.5)';
@@ -598,10 +801,22 @@ function _drawBrain(st, now) {
     const isHover = n.id === st.hover;
     const dimmed = focus && n.id !== focus &&
                    !(focusNbr && focusNbr.has(n.id));
+    const onPath = st.pathNodes && st.pathNodes.has(n.id);
     const r = n.sr * (isSel ? 2.0 : (isHover ? 1.5 : 1.0));
-    ctx.globalAlpha = dimmed ? 0.16 : (0.5 + 0.5 * Math.min(1, n.per));
+    // 路径模式下不在链路里的实体压到 0.10，让那一条单独亮着
+    ctx.globalAlpha = (st.pathNodes && !onPath) ? 0.10
+      : (dimmed ? 0.16 : (0.5 + 0.5 * Math.min(1, n.per)));
     ctx.drawImage(sp, n.sx - r * 2.6, n.sy - r * 2.6, r * 5.2, r * 5.2);
     ctx.globalAlpha = 1;
+
+    // 路径上的实体补一圈青边，隔着几个区也能一眼认出链路
+    if (onPath && !isSel) {
+      ctx.beginPath();
+      ctx.arc(n.sx, n.sy, n.sr * 1.6, 0, Math.PI * 2);
+      ctx.strokeStyle = _rgba('#38bdf8', 0.8);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
 
     if (isSel) {
       const ph = (now / 1500) % 1;
@@ -662,11 +877,21 @@ function _drawBrain(st, now) {
   // 只在文字真的变了才写 DOM，逐帧比较一个字符串可以忽略不计。
   if (st.statusEl) {
     const selNode = st.sel ? st.nodes.find(n => n.id === st.sel) : null;
-    const txt = selNode
-      ? (st.focus === selNode.id
-          ? '聚焦「' + selNode.label + '」· 再次双击或重置退出'
-          : '已选中「' + selNode.label + '」· ' + selNode.deg + ' 条关联 · 双击聚焦')
-      : (st.auto ? '拖拽旋转 · 滚轮缩放 · 单击查看 · 双击聚焦' : '自转已暂停 · 拖拽仍可旋转');
+    let txt;
+    if (st.pathNodes && st.pathLabels) {
+      txt = '路径 ' + st.pathLen + ' 跳：' + st.pathLabels.join(' → ');
+    } else if (st.pathFrom) {
+      const s = st.nodes.find(n => n.id === st.pathFrom);
+      txt = '起点「' + (s ? s.label : st.pathFrom) + '」· Shift 点击另一个实体看最短路径';
+    } else if (selNode) {
+      txt = st.focus === selNode.id
+        ? '聚焦「' + selNode.label + '」· 再次双击或重置退出'
+        : '已选中「' + selNode.label + '」· ' + selNode.deg + ' 条关联 · 双击聚焦';
+    } else {
+      txt = st.auto
+        ? '拖拽旋转 · 滚轮缩放 · 单击查看 · 双击聚焦 · Shift 点击量路径'
+        : '自转已暂停 · 拖拽仍可旋转';
+    }
     if (st.statusEl.textContent !== txt) st.statusEl.textContent = txt;
   }
 }
