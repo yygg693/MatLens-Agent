@@ -233,7 +233,11 @@ function _renderLegend(panel, d) {
     '每个光点是一个实体，光晕大小表示连接数；细线是实体之间的语义关系。</div>';
 }
 
-function _mountBrain(box, d, sig) {
+function _mountBrain(box, d, sig, prev) {
+  // 重建时（记忆新增触发自动刷新）沿用上一个渲染器的视角和选中态，
+  // 否则用户刚转到的角度会被悄悄甩回默认位置。
+  const old = prev || _g3;
+  const prevIds = (old && old.nodes) ? new Set(old.nodes.map(n => n.id)) : null;
   if (_g3) {
     _g3.running = false;
     if (_g3.raf) cancelAnimationFrame(_g3.raf);
@@ -254,16 +258,26 @@ function _mountBrain(box, d, sig) {
     nbr.get(layout.nodes[e.b].id).add(layout.nodes[e.a].id);
   });
 
+  // 这一版新出现的实体：绘制时给它们几秒钟的扩散环，像神经元刚长出来
+  const fresh = prevIds
+    ? new Set(layout.nodes.filter(n => !prevIds.has(n.id)).map(n => n.id))
+    : new Set();
+
   const st = {
     sig, canvas, box, ctx: canvas.getContext('2d'),
     nodes: layout.nodes, edges: layout.edges, nbr,
     W: 0, H: 0, dpr: 1,
-    yaw: 0.45, pitch: -0.18, dist: 2.5,
+    yaw: old ? old.yaw : 0.45,
+    pitch: old ? old.pitch : -0.18,
+    dist: old ? old.dist : 2.5,
     vyaw: 0, vpitch: 0,
-    auto: true, dragging: false, moved: 0,
-    sel: null, hover: null, focus: null,
+    auto: old ? old.auto : true,
+    dragging: false, moved: 0,
+    sel: (old && old.sel && layout.nodes.some(n => n.id === old.sel)) ? old.sel : null,
+    hover: null, focus: null,
     lastX: 0, lastY: 0, t: 0, raf: 0, running: false,
     sprites: {},
+    fresh, freshUntil: performance.now() + 7000,
   };
   _g3 = st;
   BRAIN_REGIONS.forEach(r => { st.sprites[r.key] = _makeNeuronSprite(r.color); });
@@ -552,11 +566,28 @@ function _drawBrain(st, now) {
       ctx.lineWidth = 1.6;
       ctx.stroke();
     }
+
+    // 刚被抽取出来的实体：几秒内连放三圈扩散环，让"记忆长出来了"可见
+    if (st.fresh && st.fresh.has(n.id) && now < st.freshUntil) {
+      const fade = 1 - (now - (st.freshUntil - 7000)) / 7000;
+      for (let k = 0; k < 3; k++) {
+        const ph = ((now / 1100) + k / 3) % 1;
+        ctx.beginPath();
+        ctx.arc(n.sx, n.sy, n.sr * (1.1 + ph * 3.4), 0, Math.PI * 2);
+        ctx.strokeStyle = _rgba('#22d3ee', 0.72 * (1 - ph) * fade);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
   }
 
-  // 只给选中/悬停的节点画名字，86 个标签一起画会糊成一团也费性能
+  // 只给选中/悬停的节点画名字，86 个标签一起画会糊成一团也费性能。
+  // 例外：刚长出来的实体在扩散环期间报一下名字，否则用户只看到一圈光不知道是什么。
   const ln = st.nodes.find(n => n.id === st.sel) ||
-             st.nodes.find(n => n.id === st.hover);
+             st.nodes.find(n => n.id === st.hover) ||
+             ((st.fresh && st.fresh.size && now < st.freshUntil)
+               ? st.nodes.find(n => st.fresh.has(n.id))
+               : null);
   if (ln) {
     const ty = ln.sy - ln.sr * 2.4 - 7;
     ctx.font = '600 13px ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif';
@@ -570,11 +601,12 @@ function _drawBrain(st, now) {
   }
 }
 
-export async function loadGraph() {
+export async function loadGraph(force) {
   const panel = document.getElementById('mem-graph-detail');
-  // 8 秒内重复调用直接用缓存：启动时预热一次，切到图谱视图不必再打一次请求
+  // 8 秒内重复调用直接用缓存：启动时预热一次，切到图谱视图不必再打一次请求。
+  // 自动同步（force）必须绕过缓存，否则新长出来的实体会被旧缓存挡住。
   let d = null;
-  if (_rawGraph && Date.now() - _graphFetchAt < 8000) {
+  if (!force && _rawGraph && Date.now() - _graphFetchAt < 8000) {
     d = _rawGraph;
   } else {
     try {
@@ -610,7 +642,7 @@ export async function loadGraph() {
   // 同一版图谱（实体数/关系数/更新时间都没变）不重排布局，切 tab 回来是瞬时的
   const sig = (d.nodes.length || 0) + ':' + ((d.edges || []).length) + ':' + String(d.updated_at || '');
   if (!_g3 || _g3.sig !== sig || _g3.box !== box) {
-    _mountBrain(box, d, sig);
+    _mountBrain(box, d, sig, _g3);
   } else {
     _g3.resize();
   }
@@ -647,6 +679,57 @@ const SOURCE_LABELS = {
 export function reloadMemories() {
   _memSelected = null;
   return loadMemories();
+}
+
+/* ── 记忆自动同步 ───────────────────────────────────────
+ *
+ * 记忆是对话时由 sync_turn 在后台线程写入的，不需要用户手动"存"。但前端
+ * 原本只在切页或点刷新时才重拉，于是刚聊出来的记忆要手动刷新才看得见。
+ * 这里在记忆页可见时低频轮询（15s 一次 facet，30ms 量级的本地请求），
+ * 只比条数、不做全量重载；用户正在编辑/搜索/看弹窗时不打扰。
+ */
+let _memSupCount = null;   // 已合并条数，与 total 一起作为"后端变了"的信号
+let _memWatchTimer = 0;
+
+async function _pollMemoryChange() {
+  const page = document.getElementById('page-memory');
+  if (!page || page.getClientRects().length === 0) return;   // 不在记忆页就不发请求
+  if (_memEditingId) return;
+  const modal = document.getElementById('mem-modal');
+  if (modal && modal.classList.contains('show')) return;
+  const search = document.getElementById('mem-search');
+  if (search && document.activeElement === search) return;
+
+  let f = null;
+  try {
+    const r = await fetch('/api/memory/facet');
+    if (!r.ok) return;
+    f = await r.json();
+  } catch (e) {
+    return;
+  }
+  const total = typeof f.total === 'number' ? f.total : null;
+  const sup = typeof f.superseded_count === 'number' ? f.superseded_count : null;
+  const changed = (total !== null && _memTotal !== null && total !== _memTotal) ||
+                  (sup !== null && _memSupCount !== null && sup !== _memSupCount);
+  if (!changed) return;
+
+  // 搜索态只记下新计数，不换掉用户正在看的结果
+  if (_memQuery) { _memSupCount = sup; return; }
+
+  const list = document.getElementById('mem-list');
+  const top = list ? list.scrollTop : 0;
+  await loadMemories();
+  if (list) list.scrollTop = top;
+  // 图谱正开着就同步重建（重建会保留视角，新实体会闪一下）
+  if (_g3 && _g3.running) {
+    await loadGraph(true);
+  }
+}
+
+function _startMemoryWatch() {
+  if (_memWatchTimer) clearInterval(_memWatchTimer);
+  _memWatchTimer = setInterval(() => { _pollMemoryChange().catch(() => {}); }, 15000);
 }
 
 function escapeHtml(s) {
@@ -774,6 +857,7 @@ export async function loadMemories() {
       } catch (e2) {
         _memSupersededRows = [];
       }
+      _memSupCount = _memSupersededRows.length;
       _memDupGroups = await fetchDupGroups(_memAll, rdup);
     }
     // 选中的那条如果已经不在数据里，清掉选中态
@@ -1181,6 +1265,7 @@ export function bindMemoryUI() {
   const modal = document.getElementById('mem-modal');
   if (modal) modal.onclick = (e) => { if (e.target === modal) closeMemModal(); };
   bindMemTabs();
+  _startMemoryWatch();
 }
 
 /** 记忆列表 / 实体图谱两个视图切换（图谱按需懒加载）。 */
