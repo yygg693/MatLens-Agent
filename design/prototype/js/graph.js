@@ -190,6 +190,15 @@ let _memTotal = null;
 let _memOffset = 0;
 let _memHasMore = false;
 const MEM_PAGE_SIZE = 60;
+/** source_type → 人话。与 dashboard 的 MemoryPage 保持同一套语义。 */
+const SOURCE_LABELS = {
+  user: '用户陈述',
+  document: '文献',
+  agent_inference: 'Agent 推断',
+  imported_web: '网络导入',
+};
+/** 当前正在编辑的记忆 id；null 表示弹窗处于「新增」态。 */
+let _memEditingId = null;
 
 /** 从第一页重新加载（进入记忆页 / 刷新按钮 / 搜索 / 删除后调用）。 */
 export function reloadMemories() {
@@ -262,6 +271,27 @@ function memDate(s) {
   return (d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
+function memDateTime(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return '';
+  const p = n => (n < 10 ? '0' + n : '' + n);
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+/** 溯源标签：来源类型 + 置信度；都没有时返回空串。 */
+function memProvenance(m) {
+  let html = '';
+  if (m.source_type) {
+    const label = SOURCE_LABELS[m.source_type] || m.source_type;
+    html += '<span class="mc-src-tag">' + escapeHtml(label) + '</span>';
+  }
+  if (typeof m.confidence === 'number') {
+    html += '<span class="mc-conf">置信度 ' + Math.round(m.confidence * 100) + '%</span>';
+  }
+  return html;
+}
+
 function renderMemories() {
   const list = document.getElementById('mem-list');
   if (!list) return;
@@ -274,22 +304,51 @@ function renderMemories() {
     const cat = m.category || '其他';
     const score = m.score ? (m.score * 100).toFixed(0) + '%' : '';
     const date = memDate(m.created_at);
-    return '<div class="mem-card">' +
+    const ref = m.source_ref ? String(m.source_ref) : '';
+    const detail = '<div class="mc-detail">' +
+      '<div>ID · <span style="color:var(--ml-text)">' + escapeHtml(String(m.id || '')) + '</span></div>' +
+      (m.created_at ? '<div>创建于 · ' + memDateTime(m.created_at) + '</div>' : '') +
+      (m.updated_at ? '<div>更新于 · ' + memDateTime(m.updated_at) + '</div>' : '') +
+      (ref ? '<div>来源引用 · ' + escapeHtml(ref) + '</div>' : '') +
+      (typeof m.confidence === 'number' ? '<div>置信度 · ' + Math.round(m.confidence * 100) + '%（' + escapeHtml(m.source_type || 'unknown') + '）</div>' : '') +
+      '</div>';
+    return '<div class="mem-card" data-mid="' + escapeHtml(String(m.id || '')) + '">' +
       '<div class="mc-head"><span class="mc-tag cat-' + cat + '">' + cat + '</span>' +
+      memProvenance(m) +
+      (date ? '<span class="mc-date">' + date + '</span>' : '') +
       (score ? '<span class="mc-score">相关度 ' + score + '</span>' : '') +
-      (date ? '<span class="mc-date" style="font-size:11px;color:var(--ml-text-faint);margin-left:auto;margin-right:8px">' + date + '</span>' : '') +
-      '<button class="mc-del" data-id="' + m.id + '" title="删除">✕</button></div>' +
-      '<div class="mc-text">' + escapeHtml(m.memory) + '</div></div>';
+      '</div>' +
+      '<div class="mc-text">' + escapeHtml(m.memory) + '</div>' +
+      (ref ? '<div class="mc-foot">来源 · ' + escapeHtml(ref.length > 90 ? ref.slice(0, 90) + '…' : ref) + '</div>' : '') +
+      detail +
+      '<button class="mc-edit" data-id="' + escapeHtml(String(m.id || '')) + '" title="编辑">✎</button>' +
+      '<button class="mc-del" data-id="' + escapeHtml(String(m.id || '')) + '" title="删除">✕</button>' +
+      '</div>';
   }).join('');
   if (_memHasMore && !_memQuery) {
     html += '<div style="padding:16px 0 8px;text-align:center"><button class="btn btn-ghost btn-sm" id="btn-mem-more">加载更多（已显示 ' + filtered.length + (_memTotal !== null ? ' / ' + _memTotal : '') + ' 条）</button></div>';
   }
   list.innerHTML = html;
+  // 点正文展开/收起溯源明细（ID / 时间 / 完整来源引用）
+  list.querySelectorAll('.mem-card .mc-text').forEach(el => {
+    el.onclick = () => {
+      const detail = el.parentElement.querySelector('.mc-detail');
+      if (detail) detail.classList.toggle('open');
+    };
+  });
+  list.querySelectorAll('.mc-edit').forEach(btn => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const item = _memories.find(x => String(x.id) === btn.dataset.id);
+      openMemModal(item);
+    };
+  });
   list.querySelectorAll('.mc-del').forEach(btn => {
-    btn.onclick = async () => {
+    btn.onclick = async (ev) => {
+      ev.stopPropagation();
       if (!confirm('确定删除这条记忆？')) return;
       try {
-        await fetch('/api/memory/' + btn.dataset.id, { method: 'DELETE' });
+        await fetch('/api/memory/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' });
         _memOffset = 0; _memories = [];
         loadMemories();
       } catch (e) { alert('删除失败：' + e.message); }
@@ -299,6 +358,31 @@ function renderMemories() {
   if (moreBtn) moreBtn.onclick = () => { _memOffset += MEM_PAGE_SIZE; loadMemories(); };
 }
 
+/** 打开记忆弹窗：item 为空 → 新增；传入记忆 → 编辑预填。 */
+function openMemModal(item) {
+  const modal = document.getElementById('mem-modal');
+  const title = document.getElementById('mem-modal-title');
+  const hint = document.getElementById('mem-modal-hint');
+  const area = document.getElementById('mem-new-text');
+  const save = document.getElementById('btn-mem-save');
+  if (!modal || !area) return;
+  _memEditingId = item && item.id ? String(item.id) : null;
+  if (title) title.textContent = _memEditingId ? '编辑记忆' : '添加记忆';
+  if (hint) hint.textContent = _memEditingId
+    ? '修改后保存会覆盖原记忆内容；分类标签仍由 [用户] / [实验] / [材料] / [结论] 前缀决定'
+    : '建议加类别标签，如 [用户] / [实验] / [材料] / [结论]';
+  if (save) save.textContent = _memEditingId ? '保存修改' : '保存';
+  area.value = _memEditingId ? (item.memory || '') : '';
+  modal.classList.add('show');
+  setTimeout(() => area.focus(), 50);
+}
+
+function closeMemModal() {
+  const modal = document.getElementById('mem-modal');
+  if (modal) modal.classList.remove('show');
+  _memEditingId = null;
+}
+
 export function bindMemoryUI() {
   const search = document.getElementById('mem-search');
   if (search) {
@@ -306,22 +390,40 @@ export function bindMemoryUI() {
     search.oninput = () => { clearTimeout(t); t = setTimeout(() => { _memQuery = search.value.trim(); _memOffset = 0; _memories = []; loadMemories(); }, 400); };
   }
   const addBtn = document.getElementById('btn-add-mem');
-  if (addBtn) addBtn.onclick = () => { const m = document.getElementById('mem-modal'); if (m) { m.classList.add('show'); document.getElementById('mem-new-text').focus(); } };
+  if (addBtn) addBtn.onclick = () => openMemModal(null);
   const cancelBtn = document.getElementById('btn-mem-cancel');
-  if (cancelBtn) cancelBtn.onclick = () => { const m = document.getElementById('mem-modal'); if (m) m.classList.remove('show'); };
+  if (cancelBtn) cancelBtn.onclick = () => closeMemModal();
   const saveBtn = document.getElementById('btn-mem-save');
   if (saveBtn) saveBtn.onclick = async () => {
-    const text = document.getElementById('mem-new-text').value.trim();
+    const area = document.getElementById('mem-new-text');
+    const text = area ? area.value.trim() : '';
     if (!text) return;
+    const editingId = _memEditingId;
+    saveBtn.disabled = true;
     try {
-      await fetch('/api/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: text }) });
-      document.getElementById('mem-new-text').value = '';
-      const m = document.getElementById('mem-modal'); if (m) m.classList.remove('show');
+      const res = editingId
+        ? await fetch('/api/memory/' + encodeURIComponent(editingId), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text }),
+          })
+        : await fetch('/api/memory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: text, source_type: 'user' }),
+          });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (area) area.value = '';
+      closeMemModal();
       loadMemories();
-    } catch (e) { alert('添加失败：' + e.message); }
+    } catch (e) {
+      alert((editingId ? '保存修改失败：' : '添加失败：') + e.message);
+    } finally {
+      saveBtn.disabled = false;
+    }
   };
   const refreshBtn = document.getElementById('btn-refresh-mem');
   if (refreshBtn) refreshBtn.onclick = () => { _memOffset = 0; _memories = []; loadMemories(); };
   const modal = document.getElementById('mem-modal');
-  if (modal) modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('show'); };
+  if (modal) modal.onclick = (e) => { if (e.target === modal) closeMemModal(); };
 }

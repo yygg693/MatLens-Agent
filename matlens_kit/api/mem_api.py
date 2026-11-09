@@ -229,6 +229,11 @@ def _normalize(item: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 class AddMemoryReq(BaseModel):
     content: str
+    # 溯源三件套：provider 的 mem0_add 支持它们（_source_fields 会校验），
+    # 这里必须透传，否则经 API/UI 写入的记忆永远没有来源标记。
+    source_type: Optional[str] = None
+    source_ref: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 class UpdateMemoryReq(BaseModel):
@@ -335,7 +340,15 @@ def add_memory(req: AddMemoryReq) -> Dict[str, Any]:
     content = (req.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content 不能为空")
-    res = _call("mem0_add", {"content": content})
+    payload: Dict[str, Any] = {"content": content}
+    # 只透传调用方真正给了的字段，缺省时由 provider 端决定不写 metadata。
+    if req.source_type:
+        payload["source_type"] = req.source_type
+    if req.source_ref:
+        payload["source_ref"] = req.source_ref
+    if isinstance(req.confidence, (int, float)):
+        payload["confidence"] = float(req.confidence)
+    res = _call("mem0_add", payload)
     return {"ok": True, **res}
 
 

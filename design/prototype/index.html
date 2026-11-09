@@ -1416,6 +1416,16 @@ input,textarea,select{font-family:inherit;font-size:13px}
 .mem-card .mc-del{position:absolute;top:10px;right:10px;width:24px;height:24px;border-radius:6px;background:transparent;border:none;color:var(--ml-text-faint);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:all .2s;font-size:14px}
 .mem-card:hover .mc-del{opacity:1}
 .mem-card .mc-del:hover{background:rgba(239,68,68,.15);color:#ef4444}
+/* 溯源与编辑：来源类型 / 置信度 / 时间 / 编辑入口 */
+.mem-card .mc-src-tag{font-size:10.5px;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.07);color:var(--ml-text-faint);border:1px solid rgba(255,255,255,.08)}
+.mem-card .mc-conf{font-size:10.5px;color:var(--ml-text-faint)}
+.mem-card .mc-date{font-size:10.5px;color:var(--ml-text-faint)}
+.mem-card .mc-edit{position:absolute;top:10px;right:38px;width:24px;height:24px;border-radius:6px;background:transparent;border:none;color:var(--ml-text-faint);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:all .2s;font-size:13px}
+.mem-card:hover .mc-edit{opacity:1}
+.mem-card .mc-edit:hover{background:rgba(56,189,248,.15);color:#38bdf8}
+.mem-card .mc-foot{margin-top:8px;padding-top:7px;border-top:1px dashed rgba(255,255,255,.09);font-size:11px;color:var(--ml-text-faint);word-break:break-all;line-height:1.5}
+.mem-card .mc-detail{display:none;margin-top:7px;padding-top:7px;border-top:1px dashed rgba(255,255,255,.06);font-size:11px;color:var(--ml-text-faint);line-height:1.7;word-break:break-all}
+.mem-card .mc-detail.open{display:block}
 /* 记忆召回提示条 */
 .recall-block{margin:6px 0;border:1px solid rgba(56,189,248,.25);background:linear-gradient(120deg,rgba(56,189,248,.08),rgba(99,102,241,.06));border-radius:9px;overflow:hidden;font-size:12px}
 .recall-block .think-head{display:flex;align-items:center;gap:7px;padding:7px 11px;cursor:pointer;color:#7dd3fc;font-weight:600;user-select:none;transition:background .2s}
@@ -2145,8 +2155,8 @@ input,textarea,select{font-family:inherit;font-size:13px}
     <!-- 添加记忆弹窗 -->
     <div class="modal-overlay" id="mem-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;align-items:center;justify-content:center">
       <div class="card" style="width:480px;max-width:90vw;padding:22px">
-        <div style="font-weight:700;font-size:15px;margin-bottom:14px">添加记忆</div>
-        <div style="font-size:12px;color:var(--ml-text-faint);margin-bottom:8px">建议加类别标签，如 [用户] / [实验] / [材料] / [结论]</div>
+        <div id="mem-modal-title" style="font-weight:700;font-size:15px;margin-bottom:14px">添加记忆</div>
+        <div id="mem-modal-hint" style="font-size:12px;color:var(--ml-text-faint);margin-bottom:8px">建议加类别标签，如 [用户] / [实验] / [材料] / [结论]</div>
         <textarea id="mem-new-text" style="width:100%;min-height:100px;padding:10px 12px;border-radius:10px;background:var(--ml-input);border:1px solid var(--ml-card-border);color:var(--ml-text);font-size:13px;resize:vertical;font-family:inherit" placeholder="[用户] 研究方向：二维材料过渡金属硫化物…"></textarea>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
           <button class="btn btn-ghost" id="btn-mem-cancel">取消</button>
