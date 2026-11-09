@@ -44,16 +44,34 @@ _LEAD_TAG = re.compile(r"^\[[^\]]{1,8}\]")
 _STRIP = set(
     " \t\r\n\u3000，。；：、！？·“”\"'（）()【】[]<>《》,.;:!?-—_~"
 )
+# Unicode 下标 → ASCII 数字，让 Li₄Ti₅O₁₂ 与 Li4Ti5O12 视为同一个式子
+_SUB = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+_ENTITY = re.compile(r"[A-Za-z0-9\-_]{3,}")
 
-Features = Tuple[set, set, int]
+Features = Tuple[set, set, int, set]
+
+
+def entity_tokens(text: str) -> set:
+    """抽出"既含字母又含数字"的型号/化学式 token（Q235、6061-T6、NCM811）。
+
+    这一层专门挡"同模板换实体"的误判：碳钢与铝合金的典型力学性能那条，
+    句式一模一样、字面重叠很高，但讲的是两种不同材料。仅看字符相似度
+    会把它们判成重复，合并掉就是永久丢一条材料参数。
+    """
+    out = set()
+    for tok in _ENTITY.findall(str(text or "").translate(_SUB)):
+        if any(c.isalpha() for c in tok) and any(c.isdigit() for c in tok):
+            out.add(tok.lower().replace("-", "").replace("_", ""))
+    return out
 
 
 def normalize_text(text: str) -> str:
     """归一化到可比形态：去掉 ``[用户]`` 这类前缀标签、标点与空白。
 
-    先 strip 再匹配前缀——真实数据里标签前常带空格。
+    先 strip 再匹配前缀——真实数据里标签前常带空格。Unicode 下标也在这里
+    折成 ASCII 数字，好让 ``Li₄Ti₅O₁₂`` 与 ``Li4Ti5O12`` 落到同一个形态。
     """
-    s = str(text or "").strip()
+    s = str(text or "").strip().translate(_SUB)
     s = _LEAD_TAG.sub("", s)
     return "".join(ch for ch in s if ch not in _STRIP).lower()
 
@@ -81,12 +99,12 @@ def _jac(a: set, b: set) -> float:
 def features(text: str) -> Features:
     """预计算一条文本的判定特征，批量比较时避免重复归一化。"""
     s = normalize_text(text)
-    return _ngrams(s, 2), _ngrams(s, 1), len(s)
+    return _ngrams(s, 2), _ngrams(s, 1), len(s), entity_tokens(text)
 
 
 def score_features(fa: Features, fb: Features) -> float:
-    b2a, b1a, la = fa
-    b2b, b1b, lb = fb
+    b2a, b1a, la, ea = fa
+    b2b, b1b, lb, eb = fb
     if not b2a or not b2b:
         # 空文本不参与判定——否则两条空记忆会被判成完全重复
         return 0.0
@@ -96,7 +114,12 @@ def score_features(fa: Features, fb: Features) -> float:
     j2 = _jac(b2a, b2b)
     j1 = _jac(b1a, b1b)
     length_factor = min(1.0, min(la, lb) / _LEN_REF)
-    return 0.45 * j2 + 0.45 * j1 + 0.10 * length_factor
+    score = 0.45 * j2 + 0.45 * j1 + 0.10 * length_factor
+    # 两边都点了名、却没有任何一个共同型号/化学式 —— 讲的是不同东西，
+    # 相似度再高也不许进重复簇（典型就是"碳钢"对"铝合金"）。
+    if ea and eb and not (ea & eb):
+        return min(score, 0.50)
+    return score
 
 
 def similarity(a: str, b: str) -> float:

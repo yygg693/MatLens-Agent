@@ -48,9 +48,36 @@ def test_similarity_orders_related_above_unrelated():
     assert _dedup.similarity(base, base + "。") == pytest.approx(1.0)
 
 
-def test_similarity_empty_text_is_zero():
-    assert _dedup.similarity("", "任何内容") == 0.0
+def test_empty_text_never_matches():
+    """空文本不能跟自己判成完全重复——那会让去重逻辑误删空行。"""
     assert _dedup.similarity("", "") == 0.0
+    assert _dedup.similarity("", "水热共沉淀") == 0.0
+
+
+def test_entities_disagree_blocks_merge():
+    """同模板换实体：碳钢 vs 铝合金，字面很像但不是同一件事。"""
+    steel = "[材料] 碳钢/低合金钢（如Q235、A36）典型密度7.80-7.85 g/cm³，抗拉强度350-550 MPa（低碳钢）"
+    alu = "[材料] 铝合金（如6061-T6、7075-T6）典型密度2.68-2.80 g/cm³，抗拉强度350-550 MPa（6061）"
+    assert _dedup.similarity(steel, alu) <= 0.50
+    hit, _ = _dedup.best_match(alu, [{"id": "steel", "memory": steel}], threshold=0.55)
+    assert hit is None
+
+
+def test_shared_entity_still_matches():
+    """共用同一个型号时，实体闸门不该把真重复挡掉。"""
+    a = "[材料] 钛酸锂（Li4Ti5O12，LTO）的晶格参数为8.36 Å"
+    b = "[材料] 钛酸锂（Li₄Ti₅O₁₂，LTO）的晶格参数为 8.36 Å，主要用作快充负极材料"
+    assert _dedup.similarity(a, b) > _dedup.SUSPECT_THRESHOLD
+    assert _dedup.entity_tokens(a) & _dedup.entity_tokens(b)
+
+
+def test_entity_tokens_ignores_units_and_plain_words():
+    tokens = _dedup.entity_tokens("抗拉强度 350-550 MPa，密度 2.68 g/cm³，SEM 与 XRD")
+    # 纯数字区间、单位、无数字的词都不算实体
+    assert "MPa" not in tokens
+    assert "SEM" not in tokens
+    assert tokens == set()
+    assert _dedup.entity_tokens("NCM811 与 6061-T6") == {"ncm811", "6061t6"}
 
 
 def test_richer_text_keeps_more_informative_variant():

@@ -439,15 +439,44 @@ def mem_api(monkeypatch):
 
 
 class TestMemoryApi:
-    def test_browse_forwards_offset_and_limit(self, mem_api, monkeypatch):
+    def test_browse_slices_window_from_full_set(self, mem_api, monkeypatch):
+        """浏览态先拉齐全量再本地切片。
+
+        不能把 offset 直接下传给后端：一旦有条目被合并（软失效），后端
+        的 total/分页仍在数那些用户已经看不见的条目，列表条数不会变、
+        翻页还会凭空少几条。这里锁住"分页结果正确"这个行为契约。
+        """
         provider = _ApiProvider([{"id": f"m{i}", "memory": f"f{i}"} for i in range(30)])
         monkeypatch.setattr(mem_api, "_get_provider", lambda: provider)
         out = mem_api.list_memories(q="", top_k=30, offset=10, limit=10)
-        assert provider.list_calls[-1] == {"page": 2, "page_size": 10, "offset": 10}
         assert out["count"] == 10
         assert out["total"] == 30
         assert out["has_more"] is True
-        assert out["memories"][0]["id"] == "m10"
+        assert [m["id"] for m in out["memories"]] == [f"m{i}" for i in range(10, 20)]
+
+    def test_browse_excludes_superseded_rows(self, mem_api, monkeypatch, tmp_path):
+        """已合并条目默认不出现在列表里，总数也跟着减。"""
+        provider = _ApiProvider([{"id": f"m{i}", "memory": f"f{i}"} for i in range(10)])
+        monkeypatch.setattr(mem_api, "_get_provider", lambda: provider)
+        ledger_file = tmp_path / "mem0_supersede.json"
+        ledger_file.write_text(
+            '{"m3": {"keep_id": "m4", "at": "2026-11-09T00:00:00+08:00"},'
+            ' "m5": {"keep_id": "m4", "at": "2026-11-09T00:00:00+08:00"}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            mem_api, "_supersede_path", lambda: ledger_file
+        )
+        out = mem_api.list_memories(q="", top_k=30, offset=0, limit=10)
+        assert out["total"] == 8
+        assert out["count"] == 8
+        assert "m3" not in [m["id"] for m in out["memories"]]
+        assert "m5" not in [m["id"] for m in out["memories"]]
+
+        full = mem_api.list_memories(q="", top_k=30, offset=0, limit=10,
+                                    include_superseded=True)
+        assert full["total"] == 10
+        assert len([m for m in full["memories"] if m.get("superseded_by")]) == 2
 
     def test_browse_last_page_reports_no_more(self, mem_api, monkeypatch):
         provider = _ApiProvider([{"id": f"m{i}", "memory": f"f{i}"} for i in range(25)])

@@ -346,6 +346,7 @@ def list_memories(
     top_k: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0, description="分页偏移量"),
     limit: int = Query(30, ge=1, le=200, description="单页条数"),
+    include_superseded: bool = False,
 ) -> Dict[str, Any]:
     """列出/检索记忆。无 query 时用宽泛词拉取近期记忆集合。
 
@@ -353,6 +354,9 @@ def list_memories(
     - 带 ``q`` 时走语义检索（向量近邻），天然只返回最相关的一批。
     - 不带 ``q`` 时走全量列举（``mem0_list``），可以翻页看到第 51 条之后
       的内容——这是旧的 top_k 截断永远做不到的。
+
+    已被合并的条目默认不出现在列表与检索结果里，但记忆本体仍在库里，
+    只有显式传 ``include_superseded=true`` 才能看到（前端"已合并"视图用）。
     """
     # 总开关关闭时不报错：返回空集合（不构造 agent、不打后端）。
     if not bool(_memory_settings().get("enabled", True)):
@@ -375,6 +379,9 @@ def list_memories(
         fetch_k = min(max(limit, top_k) + 1, 200)
         res = _call("mem0_search", {"query": query, "top_k": fetch_k})
         results = res.get("results", []) if isinstance(res, dict) else []
+        if not include_superseded:
+            ledger = _load_supersede()
+            results = [r for r in results if str(r.get("id") or "") not in ledger]
         window = results[offset:offset + limit]
         items = _mark_superseded([_normalize(r) for r in window])
         has_more = len(results) > offset + limit
@@ -385,9 +392,14 @@ def list_memories(
             "mode": "search",
         }
 
-    # 全量浏览：按窗口列举。
-    page = offset // limit + 1
+    # 全量浏览：拉齐全量 → 按软失效台账过滤 → 再切片。
+    #
+    # 为什么不把 offset 直接下传给后端分页：一旦有条目被合并，后端的
+    # total/分页就还在数"已经看不见的"那些，列表条数不变、第 N 页凭空
+    # 少几条。先在本地过滤再切片，total 与 has_more 才反映用户实际
+    # 能看到的条数。规模有上限保护（见 _all_memories）。
     lister = getattr(provider, "list_memories", None)
+    ledger = _load_supersede()
     if not callable(lister):
         # 后端不支持列举 —— 退化为宽搜抽样（总数不可信，仅供前端显示）。
         res = _call("mem0_search", {
@@ -395,6 +407,8 @@ def list_memories(
             "top_k": min(max(limit, top_k) + 1, 200),
         })
         results = res.get("results", []) if isinstance(res, dict) else []
+        if not include_superseded:
+            results = [r for r in results if str(r.get("id") or "") not in ledger]
         window = results[offset:offset + limit]
         items = _mark_superseded([_normalize(r) for r in window])
         return {
@@ -404,29 +418,18 @@ def list_memories(
             "has_more": len(results) > offset + limit, "mode": "browse",
         }
 
-    # offset 直接下传给 provider：后端能原生分页就原生分页，
-    # 只能按页取的就按覆盖该窗口的页取回后本地切片。
-    try:
-        data = lister(page=page, page_size=limit, offset=offset)
-    except TypeError:
-        # 老 provider 只认 page/page_size。
-        data = lister(page=page, page_size=limit)
-    rows = data.get("results", []) if isinstance(data, dict) else []
-    if not isinstance(rows, list):
-        rows = []
-    window = rows[:limit]
+    rows_all = _all_memories(provider)
+    if not include_superseded:
+        rows_all = [r for r in rows_all if str(r.get("id") or "") not in ledger]
+    total = len(rows_all)
+    window = rows_all[offset:offset + limit]
     items = _mark_superseded([_normalize(r) for r in window])
-    total = data.get("total") if isinstance(data, dict) else None
-    has_more = data.get("has_more") if isinstance(data, dict) else None
-    if not isinstance(has_more, bool):
-        has_more = (
-            offset + len(items) < total if isinstance(total, int) else False
-        )
     return {
         "ok": True, "count": len(items),
-        "total": total if isinstance(total, int) else None,
+        "total": total,
         "query": "", "memories": items,
-        "offset": offset, "limit": limit, "has_more": has_more, "mode": "browse",
+        "offset": offset, "limit": limit,
+        "has_more": offset + len(items) < total, "mode": "browse",
     }
 
 

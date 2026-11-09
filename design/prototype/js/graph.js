@@ -175,6 +175,7 @@ let _memView = 'all';        // 'all' | 'cat:<分类>' | 'dup'
 let _memSelected = null;     // 当前选中记忆 id
 let _memDupGroups = [];      // 疑似重复分组 [{ids:[], items:[]}]（优先用后端 /duplicates）
 let _memSuperseded = {};     // 已合并掉的内存 id → {keep_id, at}
+let _memSupersededRows = [];  // 已合并条目的完整行（「已合并」视图用）
 let _memTotal = null;
 let _memEditingId = null;
 const MEM_FETCH_LIMIT = 200; // 浏览态一次拉取的条数（后端上限 200）
@@ -305,6 +306,18 @@ export async function loadMemories() {
           _memSuperseded[String(m.id)] = { keep_id: m.superseded_by, at: m.superseded_at };
         }
       });
+      // 列表默认已过滤掉合并过的条目，这里单独再拉一次带 include_superseded，
+      // 供「已合并」视图展示与撤销——否则那个视图永远是空的。
+      try {
+        const r2 = await fetch('/api/memory?offset=0&limit=' + MEM_FETCH_LIMIT + '&include_superseded=true');
+        const d2 = await r2.json();
+        _memSupersededRows = (d2.memories || []).filter(m => m.superseded_by);
+        _memSupersededRows.forEach(m => {
+          _memSuperseded[String(m.id)] = { keep_id: m.superseded_by, at: m.superseded_at };
+        });
+      } catch (e2) {
+        _memSupersededRows = [];
+      }
       _memDupGroups = await fetchDupGroups(_memAll);
     }
     // 选中的那条如果已经不在数据里，清掉选中态
@@ -327,7 +340,7 @@ function currentItems() {
   const all = _memQuery ? _memHits : _memAll;
   if (_memQuery) return all;
   if (_memView === 'superseded') {
-    return all.filter(m => _memSuperseded[String(m.id)]);
+    return _memSupersededRows;
   }
   const visible = all.filter(m => !_memSuperseded[String(m.id)]);
   if (_memView === 'dup') {
