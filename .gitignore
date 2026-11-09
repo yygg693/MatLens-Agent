@@ -49,3 +49,7 @@ _archive/
 _e2e_server*.log
 _e2e_*.png
 *.bak
+
+# ---- 记忆内容分析产物（含用户私有记忆原文，不入库）----
+docs/memory-dup-report.md
+docs/memory-*-report.md
