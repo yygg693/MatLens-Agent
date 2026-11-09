@@ -223,13 +223,51 @@ function _renderLegend(panel, d) {
     '<span style="flex:1;color:#cbd5e1">' + esc(r.name) + '</span>' +
     '<span style="color:#94a3b8;font-variant-numeric:tabular-nums">' + counts[r.key] + '</span></div>'
   ).join('');
+
+  // 结构诊断：度数分布是判断这份记忆结构健不健康最便宜的指标。
+  // 孤立实体说明抽出来没连上（噪音，或抽取漏了关系）；单点支配的枢纽会把
+  // 整张图压成星形，让人误以为"所有知识都以用户为中心"。
+  const deg = new Map();
+  (d.edges || []).forEach(e => {
+    const a = String(e.source), b = String(e.target);
+    deg.set(a, (deg.get(a) || 0) + 1);
+    deg.set(b, (deg.get(b) || 0) + 1);
+  });
+  const nodes = d.nodes || [];
+  const degOf = n => deg.get(String(n.id)) || 0;
+  const isolated = nodes.filter(n => degOf(n) === 0);
+  const leaf = nodes.filter(n => degOf(n) === 1);
+  let hub = null;
+  nodes.forEach(n => { if (!hub || degOf(n) > degOf(hub)) hub = n; });
+  const hubDeg = hub ? degOf(hub) : 0;
+  const total = nodes.length || 1;
+  const diagRow = (k, v, hint) =>
+    '<div style="padding:6px 0;font-size:12px">' +
+    '<div style="display:flex;gap:8px;align-items:baseline">' +
+    '<span style="color:#cbd5e1">' + k + '</span>' +
+    '<span style="margin-left:auto;color:#e2e8f0;font-variant-numeric:tabular-nums">' + v + '</span></div>' +
+    (hint ? '<div style="font-size:10.5px;color:var(--ml-text-faint);line-height:1.5;margin-top:2px">' + hint + '</div>' : '') +
+    '</div>';
+
   panel.innerHTML =
     '<div style="font-weight:700;margin-bottom:10px;font-size:13px">实体图谱 · 3D 脑区</div>' +
     '<div style="font-size:11.5px;color:var(--ml-text-faint);line-height:1.75;margin-bottom:12px">' +
     (d.fallback ? '示例图谱 · ' : '') + (d.nodes || []).length + ' 实体 · ' +
     ((d.edges || []).length) + ' 关系<br>拖拽旋转 · 滚轮缩放 · 单击看关联 · 双击聚焦</div>' +
     rows +
-    '<div style="margin-top:14px;font-size:11px;color:var(--ml-text-faint);line-height:1.7">' +
+    '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--ml-border)">' +
+    '<div style="font-size:12px;font-weight:600;margin-bottom:4px">结构诊断</div>' +
+    diagRow('孤立实体', isolated.length + ' 个',
+      isolated.length
+        ? '没有任何关系，球面上用虚线小圈标出：' + isolated.slice(0, 3).map(n => esc(n.label)).join('、') +
+          (isolated.length > 3 ? ' 等' : '')
+        : '全部实体都连上了关系') +
+    diagRow('最大枢纽', hub ? degOf(hub) + ' 条 · ' + esc(hub.label) : '—',
+      hubDeg > 12 ? '连线高度集中，这张图会看起来像星形而不是网络' : '枢纽与其余实体差距不大') +
+    diagRow('只连一条', leaf.length + ' / ' + nodes.length,
+      '叶子节点占 ' + Math.round(leaf.length / total * 100) + '%，关系网还很浅') +
+    '</div>' +
+    '<div style="margin-top:12px;font-size:11px;color:var(--ml-text-faint);line-height:1.7">' +
     '每个光点是一个实体，光晕大小表示连接数；细线是实体之间的语义关系。</div>';
 }
 
@@ -399,6 +437,13 @@ function _mountBrain(box, d, sig, prev) {
   }, { passive: false });
 
   // 悬浮操作条
+  const statusEl = document.createElement('div');
+  statusEl.style.cssText = 'position:absolute;left:12px;bottom:44px;z-index:3;font-size:11px;' +
+    'color:rgba(226,232,240,0.75);pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,0.85);' +
+    'max-width:calc(100% - 24px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+  box.appendChild(statusEl);
+  st.statusEl = statusEl;
+
   const hud = document.createElement('div');
   hud.style.cssText = 'position:absolute;left:12px;bottom:10px;display:flex;gap:7px;z-index:3';
   hud.innerHTML =
@@ -567,6 +612,19 @@ function _drawBrain(st, now) {
       ctx.stroke();
     }
 
+    // 孤立实体：没有任何关系连出去，用一圈虚线标出来，否则它混在结构里看不出来
+    if (n.deg === 0 && !dimmed) {
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.arc(n.sx, n.sy, n.sr * 1.2, 0, Math.PI * 2);
+      ctx.setLineDash([2.5, 3.5]);
+      ctx.strokeStyle = _rgba('#94a3b8', 0.85);
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+
     // 刚被抽取出来的实体：几秒内连放三圈扩散环，让"记忆长出来了"可见
     if (st.fresh && st.fresh.has(n.id) && now < st.freshUntil) {
       const fade = 1 - (now - (st.freshUntil - 7000)) / 7000;
@@ -598,6 +656,18 @@ function _drawBrain(st, now) {
     ctx.fillStyle = '#eaf2ff';
     ctx.fillText(ln.label, ln.sx, ty);
     ctx.textAlign = 'start';
+  }
+
+  // 状态行：随手告诉用户"现在在什么状态、怎么退出"，不用去猜。
+  // 只在文字真的变了才写 DOM，逐帧比较一个字符串可以忽略不计。
+  if (st.statusEl) {
+    const selNode = st.sel ? st.nodes.find(n => n.id === st.sel) : null;
+    const txt = selNode
+      ? (st.focus === selNode.id
+          ? '聚焦「' + selNode.label + '」· 再次双击或重置退出'
+          : '已选中「' + selNode.label + '」· ' + selNode.deg + ' 条关联 · 双击聚焦')
+      : (st.auto ? '拖拽旋转 · 滚轮缩放 · 单击查看 · 双击聚焦' : '自转已暂停 · 拖拽仍可旋转');
+    if (st.statusEl.textContent !== txt) st.statusEl.textContent = txt;
   }
 }
 
