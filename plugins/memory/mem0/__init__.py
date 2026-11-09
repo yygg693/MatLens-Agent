@@ -39,11 +39,13 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.memory_provider import MemoryProvider, RecallStatus
 from agent.secret_scope import get_secret
 from tools.registry import tool_error
+
+from . import _dedup
 
 logger = logging.getLogger(__name__)
 
@@ -718,6 +720,19 @@ class Mem0MemoryProvider(MemoryProvider):
             if backend is None:
                 return
             try:
+                # 写入前先查近重复：同一件事换个说法不该变成第二条记忆。
+                # mem0 v3 的 add 只按内容哈希去重，拦不住措辞漂移。
+                dup_id, dup_score, merged_text = self._find_similar(text)
+                if dup_id:
+                    backend.update(dup_id, merged_text)
+                    self._record_success()
+                    self._index_memory(dup_id, merged_text)
+                    logger.debug(
+                        "Mem0 write folded into existing memory %s (sim=%.2f)",
+                        dup_id,
+                        dup_score,
+                    )
+                    return
                 result = backend.add(
                     [{"role": "user", "content": text}],
                     user_id=self._user_id,
@@ -776,6 +791,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_success()
                 # The extracted facts are new searchable text — index them.
                 self._index_added_rows(result)
+                # 批抽取不经过写入前检查，补一次去重折叠（只动本次新行）。
+                self._fold_duplicate_rows(result)
             except Exception as e:
                 self._record_failure()
                 logger.warning("Mem0 sync failed: %s", e)
@@ -966,6 +983,87 @@ class Mem0MemoryProvider(MemoryProvider):
             index.delete(memory_id)
         except Exception:
             pass
+
+    def _find_similar(self, text: str) -> Tuple[Optional[str], float, str]:
+        """找已存在的同义记忆，用于写入去重。
+
+        先用向量检索取候选（粗筛，一次 top_k=5），再用字符二元组相似度
+        复核（细判）。短句的 embedding 分数普遍虚高，不能直接当判据，否则
+        两条无关的短记忆也会被判成重复。
+
+        返回 ``(memory_id, score, 合并后文本)``；没命中时 id 为 ``None``，
+        调用方照常新增。
+        """
+        backend = self._backend
+        if backend is None:
+            return None, 0.0, text
+        try:
+            rows = backend.search(text, filters=self._read_filters(), top_k=5)
+        except Exception as e:
+            # 查重是优化项，失败不该阻断写入本身。
+            logger.debug("Mem0 dedup pre-check skipped: %s", e)
+            return None, 0.0, text
+        matched, score = _dedup.best_match(
+            text, rows, threshold=_dedup.DUP_THRESHOLD
+        )
+        if not matched:
+            return None, 0.0, text
+        existing = str(matched.get("memory") or matched.get("text") or "")
+        return (
+            str(matched.get("id") or ""),
+            score,
+            _dedup.richer_text(text, existing),
+        )
+
+    def _fold_duplicate_rows(self, result: Any) -> None:
+        """把刚抽取出来、其实只是措辞变体的新行折回已有条。
+
+        ``infer=True`` 的批抽取不经过写入前检查，一次会返回若干条"新"
+        记忆。这里逐条复核：命中已有条就删除新条、把旧条更新成信息更全的
+        表述，保持"一事一条"。只处理本次刚写入的行，不动历史数据。
+        """
+        rows: List[Any] = []
+        if isinstance(result, dict):
+            candidate = result.get("results")
+            if isinstance(candidate, list):
+                rows = candidate
+            elif isinstance(result.get("id"), str):
+                rows = [result]
+        elif isinstance(result, list):
+            rows = result
+        backend = self._backend
+        if backend is None or not rows:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mid = str(row.get("id") or "")
+            text = str(row.get("memory") or row.get("text") or "")
+            if not mid or not text:
+                continue
+            try:
+                hits = backend.search(text, filters=self._read_filters(), top_k=5)
+            except Exception:
+                continue
+            matched, score = _dedup.best_match(
+                text, hits, threshold=_dedup.DUP_THRESHOLD, skip_ids={mid}
+            )
+            keep_id = str((matched or {}).get("id") or "")
+            if not keep_id:
+                continue
+            merged = _dedup.richer_text(
+                text, str(matched.get("memory") or matched.get("text") or "")
+            )
+            try:
+                backend.update(keep_id, merged)
+                backend.delete(mid)
+                self._index_memory(keep_id, merged)
+                self._unindex_memory(mid)
+                logger.debug(
+                    "Mem0 folded new row %s into %s (sim=%.2f)", mid, keep_id, score
+                )
+            except Exception as e:
+                logger.debug("Mem0 duplicate fold failed for %s: %s", mid, e)
 
     def _index_added_rows(self, result: Any) -> None:
         """Index every memory a write just created.

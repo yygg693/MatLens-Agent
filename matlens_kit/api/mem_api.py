@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -30,6 +32,9 @@ MEMORY_CONTENT_PREFIX = "/api/memories"
 
 # 记忆类别标签正则：[用户] [实验] [材料] [结论] ...
 _CAT_RE = re.compile(r"^\s*\[([^\]]+)\]\s*")
+
+# 分类展示顺序：概览的占比条按这个序排，前后端共用同一个顺序。
+CATEGORY_ORDER = ["用户", "实验", "材料", "结论", "其他"]
 
 # agent 初始化可能因 qdrant 导入阻塞而长时间挂起；用超时守卫避免拖垮 HTTP 请求。
 _AGENT_CACHE: Dict[str, Any] = {}
@@ -224,6 +229,19 @@ def _normalize(item: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _mark_superseded(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把软失效状态贴到列表行上，前端据此默认隐藏、也可单独筛选。"""
+    ledger = _load_supersede()
+    if not ledger:
+        return items
+    for item in items:
+        entry = ledger.get(str(item.get("id") or ""))
+        if isinstance(entry, dict):
+            item["superseded_by"] = entry.get("keep_id")
+            item["superseded_at"] = entry.get("at")
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -238,6 +256,86 @@ class AddMemoryReq(BaseModel):
 
 class UpdateMemoryReq(BaseModel):
     text: str
+
+
+class MergeMemoryReq(BaseModel):
+    """合并一组近重复记忆。
+
+    ``mode="supersede"``（默认）不删任何东西，只把其余几条标记为"已被
+    ``keep`` 取代"——列表里不再展示、检索不再召回，但随时可以撤销。这是
+    Zep/Graphiti 双时间轴的本地简化版：事实演进靠失效旧边，不靠物理删除，
+    所以合并天然可逆。
+
+    ``mode="delete"`` 才是真删，只在用户明确要清掉时才用。
+    """
+
+    ids: List[str]
+    keep: str
+    mode: str = "supersede"
+    merged_text: Optional[str] = None
+
+
+class RestoreMemoryReq(BaseModel):
+    ids: List[str]
+
+
+# ---------------------------------------------------------------------------
+# Supersede ledger —— 软失效台账
+#
+# 记忆本体（向量库里的文本与 id）一律不动，只在本地记一张"谁被谁取代"的
+# 小表。这样合并是可撤销的，也不需要在 mem0 的 metadata 上做写入（那条路
+# 只为云端后端保留，本地版本改了会给未来升级埋坑）。
+# ---------------------------------------------------------------------------
+_SUPERSEDE_FILE = "mem0_supersede.json"
+_SUPERSEDE_LOCK = threading.Lock()
+
+
+def _supersede_path() -> Path:
+    from matlens_constants import get_matlens_home
+
+    return Path(get_matlens_home()) / _SUPERSEDE_FILE
+
+
+def _load_supersede() -> Dict[str, Any]:
+    path = _supersede_path()
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_supersede(data: Dict[str, Any]) -> None:
+    path = _supersede_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _all_memories(provider: Any, page_size: int = 200) -> List[Dict[str, Any]]:
+    """把全量记忆翻页拉齐（facet/去重扫描需要完整集合，不能只看一页）。"""
+    lister = getattr(provider, "list_memories", None)
+    if not callable(lister):
+        return []
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    for _ in range(50):  # 保护上限：1 万条
+        try:
+            data = lister(page_size=page_size, offset=offset)
+        except TypeError:
+            data = lister(page=1, page_size=page_size)
+        if not isinstance(data, dict):
+            break
+        batch = [r for r in (data.get("results") or []) if isinstance(r, dict)]
+        rows.extend(batch)
+        if len(batch) < page_size or not data.get("has_more"):
+            break
+        offset += len(batch)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +376,7 @@ def list_memories(
         res = _call("mem0_search", {"query": query, "top_k": fetch_k})
         results = res.get("results", []) if isinstance(res, dict) else []
         window = results[offset:offset + limit]
-        items = [_normalize(r) for r in window]
+        items = _mark_superseded([_normalize(r) for r in window])
         has_more = len(results) > offset + limit
         return {
             "ok": True, "count": len(items), "total": len(results),
@@ -298,7 +396,7 @@ def list_memories(
         })
         results = res.get("results", []) if isinstance(res, dict) else []
         window = results[offset:offset + limit]
-        items = [_normalize(r) for r in window]
+        items = _mark_superseded([_normalize(r) for r in window])
         return {
             "ok": True, "count": len(items), "total": len(results),
             "query": "", "memories": items,
@@ -317,7 +415,7 @@ def list_memories(
     if not isinstance(rows, list):
         rows = []
     window = rows[:limit]
-    items = [_normalize(r) for r in window]
+    items = _mark_superseded([_normalize(r) for r in window])
     total = data.get("total") if isinstance(data, dict) else None
     has_more = data.get("has_more") if isinstance(data, dict) else None
     if not isinstance(has_more, bool):
@@ -439,6 +537,202 @@ def delete_memory(memory_id: str) -> Dict[str, Any]:
     return {"ok": True, **res}
 
 
+def memory_facet(include_superseded: bool = Query(False)) -> Dict[str, Any]:
+    """全库分类/来源聚合，外加重复簇统计。
+
+    前端此前只能"拉一页再自己数"，第 61 条之后的分类计数永远是错的。
+    这里做后端聚合：一次把全量拉齐，返回真实占比，与分页无关。
+    """
+    provider = _get_provider()
+    if not _backend_ready(provider):
+        return {"ok": True, "available": False, "total": 0, "categories": []}
+    rows = _all_memories(provider)
+    superseded = _load_supersede()
+    visible = (
+        rows
+        if include_superseded
+        else [r for r in rows if str(r.get("id") or "") not in superseded]
+    )
+
+    counts: Dict[str, int] = {}
+    sources: Dict[str, int] = {}
+    missing_source = 0
+    for row in visible:
+        text = str(row.get("memory") or row.get("text") or "")
+        cat = _categorize(text)
+        counts[cat] = counts.get(cat, 0) + 1
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        src = meta.get("source_type")
+        if src:
+            sources[str(src)] = sources.get(str(src), 0) + 1
+        else:
+            missing_source += 1
+
+    total = len(visible)
+    categories = [
+        {
+            "name": name,
+            "count": counts.get(name, 0),
+            "pct": round(counts.get(name, 0) / total * 100, 1) if total else 0.0,
+        }
+        for name in CATEGORY_ORDER
+    ]
+    groups = _dedup_groups(visible)
+    return {
+        "ok": True,
+        "available": True,
+        "total": total,
+        "superseded_count": len(rows) - len(visible),
+        "categories": categories,
+        "sources": [
+            {"name": k, "count": v}
+            for k, v in sorted(sources.items(), key=lambda kv: -kv[1])
+        ],
+        "missing_source": missing_source,
+        "dup_groups": len(groups),
+        "dup_items": sum(len(g["ids"]) for g in groups),
+    }
+
+
+def _dedup_groups(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    from plugins.memory.mem0 import _dedup
+
+    # 报告里要给人看得懂的簇：带上文本与分类，前端才能直接渲染"保留哪条"。
+    items = []
+    for row in rows:
+        text = str(row.get("memory") or row.get("text") or "")
+        items.append({"id": str(row.get("id") or ""), "memory": text})
+    groups = _dedup.group_duplicates(items)
+    out = []
+    for g in groups:
+        out.append(
+            {
+                "ids": g["ids"],
+                "score": round(g["score"], 3),
+                "items": [
+                    {**it, "category": _categorize(it["memory"])} for it in g["items"]
+                ],
+            }
+        )
+    return out
+
+
+def list_duplicates(threshold: float = Query(0.55, ge=0.3, le=0.95)) -> Dict[str, Any]:
+    """疑似重复清单——合并操作的数据来源。
+
+    判定在后端做（``plugins/memory/mem0/_dedup.py``），前端不再自己实现一份
+    阈值，避免两套逻辑漂移。
+    """
+    provider = _get_provider()
+    if not _backend_ready(provider):
+        return {"ok": True, "available": False, "groups": [], "count": 0}
+    rows = _all_memories(provider)
+    superseded = _load_supersede()
+    visible = [r for r in rows if str(r.get("id") or "") not in superseded]
+
+    from plugins.memory.mem0 import _dedup
+
+    items = [
+        {"id": str(r.get("id") or ""), "memory": str(r.get("memory") or r.get("text") or "")}
+        for r in visible
+    ]
+    groups = _dedup.group_duplicates(items, threshold=threshold)
+    out = [
+        {
+            "ids": g["ids"],
+            "score": round(g["score"], 3),
+            "items": [
+                {**it, "category": _categorize(it["memory"])} for it in g["items"]
+            ],
+        }
+        for g in groups
+    ]
+    return {
+        "ok": True,
+        "available": True,
+        "groups": out,
+        "count": len(out),
+        "items": sum(len(g["ids"]) for g in out),
+        "threshold": threshold,
+    }
+
+
+def merge_memories(req: MergeMemoryReq) -> Dict[str, Any]:
+    """合并一组近重复记忆。
+
+    默认走软失效（supersede）：保留 ``keep``，其余记进台账，列表与检索都
+    不再展示，但随时可以 ``/restore`` 撤销。物理删除必须显式
+    ``mode="delete"``——合并点错一次不该是不可挽回的事故。
+    """
+    keep = (req.keep or "").strip()
+    ids = [i.strip() for i in (req.ids or []) if i and i.strip()]
+    if not keep or keep not in ids:
+        raise HTTPException(status_code=400, detail="keep 必须是 ids 中的一条")
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="至少要两条才能合并")
+    if req.mode not in ("supersede", "delete"):
+        raise HTTPException(status_code=400, detail="mode 只能是 supersede 或 delete")
+
+    merged_text = (req.merged_text or "").strip()
+    if merged_text:
+        _call("mem0_update", {"memory_id": keep, "text": merged_text})
+
+    survivors = [i for i in ids if i != keep]
+    if req.mode == "delete":
+        for mid in survivors:
+            try:
+                _call("mem0_delete", {"memory_id": mid})
+            except Exception:
+                continue
+        with _SUPERSEDE_LOCK:
+            ledger = _load_supersede()
+            for mid in survivors:
+                ledger.pop(mid, None)
+            _save_supersede(ledger)
+        return {"ok": True, "mode": "delete", "keep": keep, "removed": survivors}
+
+    with _SUPERSEDE_LOCK:
+        ledger = _load_supersede()
+        stamp = _now_iso()
+        for mid in survivors:
+            ledger[mid] = {"keep_id": keep, "at": stamp}
+        _save_supersede(ledger)
+    return {"ok": True, "mode": "supersede", "keep": keep, "superseded": survivors}
+
+
+def restore_memories(req: RestoreMemoryReq) -> Dict[str, Any]:
+    """撤销软失效：把被合并掉的条目重新放回列表。"""
+    ids = [i.strip() for i in (req.ids or []) if i and i.strip()]
+    with _SUPERSEDE_LOCK:
+        ledger = _load_supersede()
+        restored = [mid for mid in ids if mid in ledger]
+        for mid in restored:
+            ledger.pop(mid, None)
+        if restored:
+            _save_supersede(ledger)
+    return {"ok": True, "restored": restored, "count": len(restored)}
+
+
+def list_superseded() -> Dict[str, Any]:
+    """列出当前处于失效态的条目（供"已合并"视图与撤销按钮）。"""
+    ledger = _load_supersede()
+    return {
+        "ok": True,
+        "items": [
+            {"id": mid, "keep_id": v.get("keep_id"), "at": v.get("at")}
+            for mid, v in ledger.items()
+            if isinstance(v, dict)
+        ],
+        "count": len(ledger),
+    }
+
+
+def _now_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def last_injection() -> Dict[str, Any]:
     """本轮注入了哪些记忆——供前端展示"Agent 用了什么"。
 
@@ -475,6 +769,19 @@ def build_router(prefix: str = MEMORY_ROUTES_PREFIX) -> APIRouter:
     router.add_api_route("", list_memories, methods=["GET"], name="list_memories")
     router.add_api_route("", add_memory, methods=["POST"], name="add_memory")
     router.add_api_route("/status", memory_status, methods=["GET"], name="memory_status")
+    router.add_api_route("/facet", memory_facet, methods=["GET"], name="memory_facet")
+    router.add_api_route(
+        "/duplicates", list_duplicates, methods=["GET"], name="memory_duplicates"
+    )
+    router.add_api_route(
+        "/merge", merge_memories, methods=["POST"], name="memory_merge"
+    )
+    router.add_api_route(
+        "/restore", restore_memories, methods=["POST"], name="memory_restore"
+    )
+    router.add_api_route(
+        "/superseded", list_superseded, methods=["GET"], name="memory_superseded"
+    )
     router.add_api_route(
         "/last-injection", last_injection, methods=["GET"], name="memory_last_injection"
     )

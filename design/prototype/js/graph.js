@@ -173,7 +173,8 @@ let _memHits = [];           // 搜索态：后端语义检索结果
 let _memQuery = '';
 let _memView = 'all';        // 'all' | 'cat:<分类>' | 'dup'
 let _memSelected = null;     // 当前选中记忆 id
-let _memDupGroups = [];      // 疑似重复分组 [{ids:[], items:[]}]
+let _memDupGroups = [];      // 疑似重复分组 [{ids:[], items:[]}]（优先用后端 /duplicates）
+let _memSuperseded = {};     // 已合并掉的内存 id → {keep_id, at}
 let _memTotal = null;
 let _memEditingId = null;
 const MEM_FETCH_LIMIT = 200; // 浏览态一次拉取的条数（后端上限 200）
@@ -259,6 +260,31 @@ function computeDupGroups(items, threshold) {
   return groups;
 }
 
+/** 拉后端算好的重复簇；后端不可用时回退到本地同构算法。
+ *
+ * 判定逻辑只留在后端一处（plugins/memory/mem0/_dedup.py），前端这份
+ * 只是降级兜底，避免两套阈值各自漂移。
+ */
+async function fetchDupGroups(all) {
+  try {
+    const r = await fetch('/api/memory/duplicates');
+    if (r.ok) {
+      const d = await r.json();
+      if (d && Array.isArray(d.groups)) {
+        const byId = new Map(all.map(m => [String(m.id), m]));
+        return d.groups
+          .map(g => ({
+            ids: g.ids,
+            score: g.score || 0,
+            items: g.ids.map(id => byId.get(String(id))).filter(Boolean),
+          }))
+          .filter(g => g.items.length > 1);
+      }
+    }
+  } catch (e) { /* 落到本地兜底 */ }
+  return computeDupGroups(all, 0.5);
+}
+
 export async function loadMemories() {
   const list = document.getElementById('mem-list');
   if (list) list.innerHTML = '<div style="color:var(--ml-text-faint);font-size:13px;padding:40px;text-align:center">加载中…</div>';
@@ -273,7 +299,13 @@ export async function loadMemories() {
       const data = await r.json();
       _memAll = data.memories || [];
       _memTotal = (typeof data.total === 'number') ? data.total : null;
-      _memDupGroups = computeDupGroups(_memAll, 0.5);
+      _memSuperseded = {};
+      _memAll.forEach(m => {
+        if (m.superseded_by) {
+          _memSuperseded[String(m.id)] = { keep_id: m.superseded_by, at: m.superseded_at };
+        }
+      });
+      _memDupGroups = await fetchDupGroups(_memAll);
     }
     // 选中的那条如果已经不在数据里，清掉选中态
     const all = _memQuery ? _memHits : _memAll;
@@ -290,20 +322,24 @@ export async function loadMemories() {
   }
 }
 
-/** 当前视图下要展示的记忆。 */
+/** 当前视图下要展示的记忆。已被合并掉的条目只在「已合并」视图里出现。 */
 function currentItems() {
   const all = _memQuery ? _memHits : _memAll;
   if (_memQuery) return all;
+  if (_memView === 'superseded') {
+    return all.filter(m => _memSuperseded[String(m.id)]);
+  }
+  const visible = all.filter(m => !_memSuperseded[String(m.id)]);
   if (_memView === 'dup') {
     const ids = new Set();
     _memDupGroups.forEach(g => g.ids.forEach(id => ids.add(id)));
-    return all.filter(m => ids.has(String(m.id)));
+    return visible.filter(m => ids.has(String(m.id)));
   }
   if (_memView.indexOf('cat:') === 0) {
     const cat = _memView.slice(4);
-    return all.filter(m => (m.category || '其他') === cat);
+    return visible.filter(m => (m.category || '其他') === cat);
   }
-  return all;
+  return visible;
 }
 
 function memDate(s) {
@@ -349,7 +385,9 @@ function statusLine() {
 function renderOverview() {
   const box = document.getElementById('mem-overview');
   if (!box) return;
-  const all = _memQuery ? _memHits : _memAll;
+  const raw = _memQuery ? _memHits : _memAll;
+  // 分类占比只统计"在场"的记忆：已合并掉的不该继续占份额。
+  const all = _memQuery ? raw : raw.filter(m => !_memSuperseded[String(m.id)]);
   const counts = {};
   all.forEach(m => { const c = m.category || '其他'; counts[c] = (counts[c] || 0) + 1; });
   const base = all.length || 1;
@@ -368,22 +406,26 @@ function renderOverview() {
     counts[c] + '</span></div></div>').join('');
 
   const noSrc = all.filter(m => !m.source_type).length;
+  const mergedCount = Object.keys(_memSuperseded).length;
   const dupGroups = _memQuery ? 0 : _memDupGroups.length;
   const dupItems = _memQuery ? 0 : _memDupGroups.reduce((s, g) => s + g.items.length, 0);
 
   box.innerHTML =
-    '<div class="mc-ov-hero"><div class="n">' + (_memTotal !== null ? _memTotal : all.length) + '</div>' +
-    '<div class="l">条记忆 · Mem0 语义检索</div></div>' +
+    '<div class="mc-ov-hero"><div class="n">' + all.length + '</div>' +
+    '<div class="l">条有效记忆 · Mem0 语义检索</div></div>' +
     '<div class="mc-ov-sec"><div class="t">分类</div>' +
     '<div class="mc-ov-cat' + (_memView === 'all' ? ' active' : '') + '" data-cat="all">' +
     '<div class="row"><span>全部</span><span>' + all.length + '</span></div>' +
     '<div class="bar"><div class="fill" style="width:100%;background:var(--ml-grad)"></div></div></div>' +
     catRows + extraRows + '</div>' +
     '<div class="mc-ov-sec"><div class="t">治理</div>' +
-    '<div class="mc-gov-item" data-gov="dup"><span class="k">疑似重复</span>' +
+    '<div class="mc-gov-item' + (_memView === 'dup' ? ' active' : '') + '" data-gov="dup"><span class="k">疑似重复</span>' +
     '<span class="v">' + dupGroups + ' 组 / ' + dupItems + ' 条</span></div>' +
     '<div class="mc-gov-item" data-gov="nosrc"><span class="k">无来源标记</span>' +
     '<span class="v">' + noSrc + ' 条</span></div>' +
+    (mergedCount ? '<div class="mc-gov-item' + (_memView === 'superseded' ? ' active' : '') +
+      '" data-gov="superseded"><span class="k">已合并</span>' +
+      '<span class="v">' + mergedCount + ' 条 · 可撤销</span></div>' : '') +
     '</div>';
 
   box.querySelectorAll('.mc-ov-cat').forEach(el => {
@@ -398,6 +440,8 @@ function renderOverview() {
       if (el.dataset.gov === 'dup') {
         if (!_memDupGroups.length) { alert('当前没有检测到疑似重复的记忆。'); return; }
         _memView = 'dup';
+      } else if (el.dataset.gov === 'superseded') {
+        _memView = 'superseded';
       } else {
         _memView = 'all';
       }
@@ -414,6 +458,7 @@ function rowHtml(m) {
   if (typeof m.confidence === 'number') meta.push('<span>置信度 ' + Math.round(m.confidence * 100) + '%</span>');
   if (m.created_at) meta.push('<span>' + memDate(m.created_at) + '</span>');
   if (m.score) meta.push('<span>相关度 ' + (m.score * 100).toFixed(0) + '%</span>');
+  if (_memSuperseded[String(m.id)]) meta.push('<span style="color:var(--ml-warn)">已合并</span>');
   const sel = String(m.id) === _memSelected ? ' sel' : '';
   const idEsc = escapeHtml(String(m.id || ''));
   return '<div class="mem-row' + sel + '" data-mid="' + idEsc + '">' +
@@ -439,8 +484,13 @@ function renderRows() {
   let html = '';
   if (_memView === 'dup' && !_memQuery) {
     _memDupGroups.forEach((g, gi) => {
-      html += '<div style="font-size:11px;color:var(--ml-text-faint);padding:10px 2px 3px">' +
-        '重复组 ' + (gi + 1) + ' · ' + g.items.length + ' 条 · 相似度 ' + Math.round(g.score * 100) + '%</div>';
+      const keep = _richestOf(g.items);
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;' +
+        'font-size:11px;color:var(--ml-text-faint);padding:10px 2px 3px">' +
+        '<span>重复组 ' + (gi + 1) + ' · ' + g.items.length + ' 条 · 相似度 ' +
+        Math.round((g.score || 0) * 100) + '%</span>' +
+        '<button class="btn btn-ghost btn-sm" data-merge-keep="' + escapeHtml(String(keep.id)) + '">合并为一条</button>' +
+        '</div>';
       g.items.forEach(m => { html += rowHtml(m); });
     });
   } else {
@@ -449,6 +499,9 @@ function renderRows() {
   list.innerHTML = html;
   list.querySelectorAll('.mem-row').forEach(el => {
     el.onclick = () => { _memSelected = el.dataset.mid; renderRows(); renderDetail(); };
+  });
+  list.querySelectorAll('[data-merge-keep]').forEach(btn => {
+    btn.onclick = (ev) => { ev.stopPropagation(); mergeGroup(btn.dataset.mergeKeep); };
   });
   list.querySelectorAll('.mr-ops .edit').forEach(btn => {
     btn.onclick = (ev) => {
@@ -481,9 +534,12 @@ function renderDetail() {
 
   const sim = _memDupGroups.find(g => g.ids.indexOf(String(item.id)) >= 0);
   const simOthers = sim ? sim.items.filter(m => String(m.id) !== String(item.id)) : [];
+  const sup = _memSuperseded[String(item.id)];
 
   panel.innerHTML =
     '<div class="d-tags">' + tags.join('') + '</div>' +
+    (sup ? '<div class="d-meta" style="color:var(--ml-warn)"><div><span class="k">状态</span>' +
+      '<span class="v">已合并到 ' + escapeHtml(String(sup.keep_id || '').slice(0, 8)) + '</span></div></div>' : '') +
     '<div class="d-text">' + escapeHtml(item.memory) + '</div>' +
     '<div class="d-meta">' +
     (item.source_ref ? '<div><span class="k">来源引用</span><span class="v">' + escapeHtml(item.source_ref) + '</span></div>' : '') +
@@ -495,6 +551,9 @@ function renderDetail() {
       simOthers.map(m => '<div class="s" data-mid="' + escapeHtml(String(m.id)) + '">' + escapeHtml(m.memory) + '</div>').join('') +
       '</div></div>' : '') +
     '<div class="d-ops">' +
+    (sup
+      ? '<button class="btn btn-ghost" id="mem-detail-restore">撤销合并</button>'
+      : (simOthers.length ? '<button class="btn btn-ghost" id="mem-detail-merge">合并其余 ' + simOthers.length + ' 条</button>' : '')) +
     '<button class="btn btn-ghost" id="mem-detail-edit">编辑</button>' +
     '<button class="btn btn-ghost" id="mem-detail-del" style="color:#ef4444">删除</button>' +
     '</div>';
@@ -503,6 +562,10 @@ function renderDetail() {
   if (eb) eb.onclick = () => openMemModal(item);
   const db = document.getElementById('mem-detail-del');
   if (db) db.onclick = () => deleteMemory(String(item.id));
+  const rb = document.getElementById('mem-detail-restore');
+  if (rb) rb.onclick = () => restoreMemory([String(item.id)]);
+  const mb = document.getElementById('mem-detail-merge');
+  if (mb) mb.onclick = () => mergeGroup(String(item.id));
   panel.querySelectorAll('.mc-sim .s').forEach(el => {
     el.onclick = () => { _memSelected = el.dataset.mid; renderRows(); renderDetail(); };
   });
@@ -516,6 +579,59 @@ async function deleteMemory(id) {
     await loadMemories();
   } catch (e) {
     alert('删除失败：' + e.message);
+  }
+}
+
+/** 组内表述最全的那条——合并默认保留它，避免合完反而丢信息。 */
+function _richestOf(items) {
+  let best = items[0];
+  items.forEach(m => { if (String(m.memory || '').length > String(best.memory || '').length) best = m; });
+  return best;
+}
+
+/** 把一组近重复合并成一条。
+ *
+ * 走后端的 supersede：保留最全的那条，其余只标为"已合并"，随时能撤销。
+ * 不做物理删除——合并判断可能有误，不可逆的代价太大。
+ */
+async function mergeGroup(keepId) {
+  const g = _memDupGroups.find(x => x.ids.indexOf(String(keepId)) >= 0);
+  if (!g || g.ids.length < 2) return;
+  const keep = g.items.find(m => String(m.id) === String(keepId)) || _richestOf(g.items);
+  if (!confirm('把这组 ' + g.ids.length + ' 条合并为 1 条？\n\n保留：' +
+      String(keep.memory || '').slice(0, 80) + '\n\n其余 ' + (g.ids.length - 1) +
+      ' 条标记为已合并（不删除，可随时撤销）。')) return;
+  try {
+    const r = await fetch('/api/memory/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids: g.ids,
+        keep: String(keep.id),
+        mode: 'supersede',
+        merged_text: String(keep.memory || ''),
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '合并失败');
+    await loadMemories();
+  } catch (e) {
+    alert('合并失败：' + e.message);
+  }
+}
+
+/** 撤销合并：把条目放回列表。 */
+async function restoreMemory(ids) {
+  try {
+    const r = await fetch('/api/memory/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!r.ok) throw new Error('撤销失败');
+    await loadMemories();
+  } catch (e) {
+    alert('撤销失败：' + e.message);
   }
 }
 
