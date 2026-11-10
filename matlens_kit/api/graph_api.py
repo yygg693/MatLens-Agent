@@ -88,19 +88,49 @@ def _save_cache(g: Dict[str, Any]) -> None:
     _GRAPH_PATH.write_text(json.dumps(g, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _fetch_memories(top_k: int = 60) -> List[Dict[str, Any]]:
-    """从统一后端取记忆集合（复用 mem_api 的 provider 访问）。"""
+def _fetch_memories(top_k: int = 200) -> List[Dict[str, Any]]:
+    """从统一后端取记忆集合（复用 mem_api 的 provider 访问）。
+
+    优先全量分页枚举。旧实现用一次语义检索取 top_k，那只是"最相关的一批"，
+    不是全部记忆——图谱因此永远看不见库里的另一半，实体覆盖和边都会缺一块。
+    后端不支持枚举时（抛 NotImplementedError）才回落到检索。
+    """
     try:
-        from matlens_kit.api.mem_api import _get_provider, _categorize
+        from matlens_kit.api.mem_api import _categorize, _get_provider
 
         provider = _get_provider()
         if provider is None or getattr(provider, "_backend", None) is None:
             return []
+
+        results: List[Dict[str, Any]] = []
+        lister = getattr(provider, "list_memories", None)
+        if callable(lister):
+            offset = 0
+            while True:
+                data = lister(page=1, page_size=200, offset=offset)
+                if not isinstance(data, dict):
+                    break
+                rows = data.get("results") or []
+                for r in rows:
+                    mem = r.get("memory") or r.get("text") or ""
+                    if mem:
+                        results.append({
+                            "id": r.get("id"),
+                            "memory": mem,
+                            "category": _categorize(mem),
+                        })
+                if not rows or not data.get("has_more"):
+                    break
+                offset += len(rows)
+                if offset > 2000:
+                    break
+        if results:
+            return results
+
         raw = provider.handle_tool_call(
             "mem0_search",
             {"query": "材料 科研 实验 用户 结论 方向 参数 偏好", "top_k": top_k},
         )
-        results = []
         if isinstance(raw, str):
             try:
                 raw = json.loads(raw)
@@ -108,7 +138,8 @@ def _fetch_memories(top_k: int = 60) -> List[Dict[str, Any]]:
                 raw = {}
         for r in (raw.get("results", []) if isinstance(raw, dict) else []):
             mem = r.get("memory") or r.get("text") or ""
-            results.append({"id": r.get("id"), "memory": mem, "category": _categorize(mem)})
+            if mem:
+                results.append({"id": r.get("id"), "memory": mem, "category": _categorize(mem)})
         return results
     except Exception:
         return []
@@ -181,24 +212,167 @@ def _heuristic_graph(memos: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"nodes": nodes, "edges": edges, "fallback": True}
 
 
+GRAPH_BATCH_SIZE = 45
+
+
+def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
+    """把分批抽取的结果合并成一张图。
+
+    每批独立送给模型，模型自己编的 id 在不同批之间并不互相指向，所以不能直接
+    把各批的 nodes/edges 拼起来——那样会出现"t1 在这批指 A、在那批指 B"的错连。
+    处理办法：节点按 label 归一去重并重新分配稳定 id，每批的原始 id 先映射到
+    规范 id，再让边按映射落地；最后按 (source, target, label) 去重。
+    """
+    nodes: List[Dict[str, Any]] = []
+    by_label: Dict[str, str] = {}
+    id_maps: List[Dict[str, str]] = []
+
+    for part in parts:
+        local: Dict[str, str] = {}
+        if isinstance(part, dict):
+            for n in part.get("nodes") or []:
+                if not isinstance(n, dict):
+                    continue
+                label = str(n.get("label") or "").strip()
+                if not label:
+                    continue
+                key = label.casefold()
+                nid = by_label.get(key)
+                if nid is None:
+                    nid = "n%d" % len(nodes)
+                    by_label[key] = nid
+                    nodes.append({
+                        "id": nid,
+                        "label": label,
+                        "category": n.get("category") or "其他",
+                    })
+                local[str(n.get("id") or "")] = nid
+                local.setdefault(label, nid)
+        id_maps.append(local)
+
+    edges: List[Dict[str, Any]] = []
+    seen = set()
+    for idx, part in enumerate(parts):
+        if not isinstance(part, dict):
+            continue
+        local = id_maps[idx]
+        for e in part.get("edges") or []:
+            if not isinstance(e, dict):
+                continue
+            src = local.get(str(e.get("source") or ""))
+            dst = local.get(str(e.get("target") or ""))
+            if not src or not dst or src == dst:
+                continue
+            rel = str(e.get("label") or "").strip()
+            key = (src, dst, rel)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({"id": "e%d" % len(edges), "source": src, "target": dst, "label": rel})
+
+    return {"nodes": nodes, "edges": edges}
+
+
 def _build_graph(force: bool = False) -> Dict[str, Any]:
     memos = _fetch_memories()
     if not memos:
         return {"nodes": [], "edges": [], "empty": True, "message": "暂无记忆可供构图"}
 
-    data = _llm_extract(memos)
-    if data is None:
-        data = _heuristic_graph(memos)
+    parts: List[Any] = []
+    for start in range(0, len(memos), GRAPH_BATCH_SIZE):
+        chunk = memos[start:start + GRAPH_BATCH_SIZE]
+        data = _llm_extract(chunk)
+        if data is None:
+            data = _heuristic_graph(chunk)
+        parts.append(data)
+
+    data = _merge_graph_parts(parts)
+    fell_back = bool(parts) and all(
+        isinstance(p, dict) and p.get("fallback") for p in parts
+    )
 
     # 着色 + 尺寸
     for n in data.get("nodes", []):
         n["color"] = CATEGORY_COLORS.get(n.get("category", "其他"), CATEGORY_COLORS["其他"])
         n.setdefault("val", 1)
     data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    data["built_ts"] = time.time()
     data["memory_count"] = len(memos)
-    if "fallback" not in data:
-        data["fallback"] = False
+    data["fallback"] = fell_back
     return data
+
+
+def _current_memory_total() -> Optional[int]:
+    """当前记忆总量；后端不可用时返回 None（此时不做过期判断）。"""
+    try:
+        from matlens_kit.api.mem_api import _exact_count, _get_provider
+
+        return _exact_count(_get_provider())
+    except Exception:
+        return None
+
+
+_STALE_PROBE_INTERVAL = 300.0
+_stale_probe = {"at": 0.0}
+
+
+def _cache_is_stale(cached: Dict[str, Any]) -> bool:
+    """缓存里的记忆条数和库里的对不上，说明缓存是旧快照，该重建了。
+
+    探针本身要问后端，有代价，所以最多每 5 分钟查一次；拿不到总量时不判过期，
+    宁可继续用旧图，也不因为一次探测失败把图清空。
+    """
+    recorded = cached.get("memory_count")
+    if not isinstance(recorded, int):
+        return False
+    now = time.time()
+    if now - _stale_probe["at"] < _STALE_PROBE_INTERVAL:
+        return False
+    _stale_probe["at"] = now
+    total = _current_memory_total()
+    if total is None:
+        return False
+    return total != recorded
+
+
+_rebuild_state = {"running": False}
+
+
+def _should_replace(previous: Optional[Dict[str, Any]],
+                   candidate: Dict[str, Any]) -> bool:
+    """新图能否覆盖旧图。
+
+    抽取降级（LLM 不可用 → 启发式"记忆即节点"）时，产物在结构上是有损的：
+    节点变成一句句记忆、边变成同类别的串链。用它覆盖已有的真图，等于把好图
+    降级成垃圾，所以只允许在旧图本来就是降级图、或旧图空的时候替换。
+    """
+    if not candidate.get("nodes"):
+        return False
+    if candidate.get("fallback") and previous:
+        if not previous.get("fallback"):
+            return False
+    return True
+
+
+def _kick_rebuild(previous: Optional[Dict[str, Any]] = None) -> None:
+    """后台重建图谱，不阻塞当前请求：先返回旧图，下一次请求拿到新图。"""
+    if _rebuild_state["running"]:
+        return
+    _rebuild_state["running"] = True
+
+    def _run() -> None:
+        try:
+            with _graph_lock:
+                g = _build_graph(force=True)
+                if not _should_replace(previous, g):
+                    return
+                _save_cache(g)
+        except Exception:
+            pass
+        finally:
+            _rebuild_state["running"] = False
+
+    threading.Thread(target=_run, daemon=True, name="graph-rebuild").start()
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +388,10 @@ def get_graph() -> Dict[str, Any]:
     if cached.get("nodes"):
         cached.setdefault("fallback", False)
         cached["auto_build"] = auto_build_on
+        # 缓存自查：记忆库长了但图还是旧快照时，后台重建，当前请求先返回旧图。
+        if auto_build_on and _cache_is_stale(cached):
+            _kick_rebuild(cached)
+            cached["rebuilding"] = True
         return cached
     if not auto_build_on:
         return {
