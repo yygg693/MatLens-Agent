@@ -427,6 +427,8 @@ function _renderLegend(panel, d) {
   const mergedNodes = nodes.filter(n => Array.isArray(n.aliases) && n.aliases.length);
   const mergedTotal = mergedNodes.reduce((s, n) => s + n.aliases.length, 0);
   const candidates = Array.isArray(d.merge_candidates) ? d.merge_candidates : [];
+  // 关系动词收敛度只在语义视图有意义（共现视图的边是"同框"，不是关系）
+  const relStats = (mode !== 'cooc' && d.relation_stats) ? d.relation_stats : null;
   const diagRow = (k, v, hint) =>
     '<div style="padding:6px 0;font-size:12px">' +
     '<div style="display:flex;gap:8px;align-items:baseline">' +
@@ -470,6 +472,12 @@ function _renderLegend(panel, d) {
       hubDeg > 12 ? '连线高度集中，这张图会看起来像星形而不是网络' : '枢纽与其余实体差距不大') +
     diagRow('只连一条', leaf.length + ' / ' + nodes.length,
       '叶子节点占 ' + Math.round(leaf.length / total * 100) + '%，关系网还很浅') +
+    (relStats
+      ? diagRow('关系动词', relStats.unique + ' 种',
+          relStats.once + ' 种只出现一次（' +
+          Math.round(relStats.once / Math.max(1, relStats.unique) * 100) +
+          '%）——同类关系被换着说法写，边数就会跟着抖')
+      : '') +
     (mergedTotal
       ? diagRow('已归并', mergedTotal + ' 个写法',
           mergedNodes.slice(0, 2).map(n => esc(n.aliases[0]) + ' → ' + esc(n.label)).join('，') +

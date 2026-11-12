@@ -285,6 +285,150 @@ def test_llm_extract_hands_known_labels_to_the_model(monkeypatch):
     assert "复用" in user_prompt
 
 
+def test_llm_extract_hands_known_relations_to_the_model(monkeypatch):
+    """关系动词同样要复用：否则「用于」每次被换成「应用于」，边数就跟着抖。"""
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"nodes":[],"edges":[]}'))]
+        )
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(graph_api, "_get_deepseek_key", lambda: "sk-test")
+    monkeypatch.setattr(graph_api, "_DEEPSEEK_BASE_URL", "https://example.com/v1")
+
+    graph_api._llm_extract(
+        [{"id": "1", "memory": "钙钛矿用旋涂法制备", "category": "方法"}],
+        None,
+        ["用于", "导致", "包含"],
+    )
+
+    user_prompt = captured["messages"][1]["content"]
+    assert "用于" in user_prompt and "导致" in user_prompt
+    assert "已有关系动词" in user_prompt
+
+
+def test_relation_synonyms_collapse_to_one_verb(tmp_path, monkeypatch):
+    monkeypatch.setattr(graph_api, "_RELATION_DICT_PATH", tmp_path / "relation_dict.json")
+    edges = [{"label": "应用于"}, {"label": "采用"}, {"label": "用于"},
+             {"label": "引起"}, {"label": "导致"}]
+
+    out = graph_api._apply_relation_dict(edges)
+
+    assert [e["label"] for e in out] == ["用于", "用于", "用于", "导致", "导致"]
+
+
+def test_relation_dict_records_verbs_for_reuse(tmp_path, monkeypatch):
+    monkeypatch.setattr(graph_api, "_RELATION_DICT_PATH", tmp_path / "relation_dict.json")
+
+    graph_api._apply_relation_dict([{"label": "用于"}, {"label": "导致"}, {"label": "导致"}])
+
+    names = graph_api._relation_canonical_names()
+    assert names[0] == "导致"       # 出现次数最多的排最前，优先传给模型
+    assert "用于" in names
+
+
+def test_near_synonyms_that_mean_different_things_stay_apart(tmp_path, monkeypatch):
+    """「测试」与「表征」、「具有」与「包含」在材料语境里不是一回事，合并会把区分抹掉。"""
+    monkeypatch.setattr(graph_api, "_RELATION_DICT_PATH", tmp_path / "relation_dict.json")
+    edges = [{"label": "测试"}, {"label": "表征"}, {"label": "具有"}, {"label": "包含"}]
+
+    out = graph_api._apply_relation_dict(edges)
+
+    assert [e["label"] for e in out] == ["测试", "表征", "具有", "包含"]
+
+
+def test_entity_name_heuristic_keeps_formulas_and_journal_names():
+    """化学式和英文期刊名本来就长，不能因为"超过 16 字"就当整句丢掉。"""
+    for good in ["Ce0.78Gd0.20Ca0.02O2-δ", "Ni₀.₈Co₀.₁Mn₀.₁(OH)₂",
+                 "Journal of Materials Chemistry A", "Advanced Energy Materials",
+                 "GDC-Ca共掺杂", "GDC-Ca共掺杂电解质（Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ）"]:
+        assert graph_api._looks_like_entity_name(good) is True, good
+
+    for bad in ["[材料] 钛酸锂的晶格参数为8.36 Å，主要用作…",
+                "用户的研究方向包括高熵合金设计与性能优化",
+                "用户的课题组代号是 Materials-3",
+                "固态电池氧化物电解质界面阻抗可分解为空间电荷层、相间反应层"]:
+        assert graph_api._looks_like_entity_name(bad) is False, bad
+
+
+def test_whole_sentences_are_never_registered_as_entities(tmp_path, monkeypatch):
+    """整句一旦进词典，下一轮会被当作「已有实体」原样喂回模型，图会变成句子集合。"""
+    monkeypatch.setattr(graph_api, "_ENTITY_DICT_PATH", tmp_path / "entity_dict.json")
+
+    data = {"nodes": [
+        {"id": "n1", "label": "钙钛矿", "category": "材料"},
+        {"id": "n2", "label": "用户的研究方向包括高熵合金设计与性能优化", "category": "用户"},
+    ]}
+    graph_api._apply_entity_dict(data)
+
+    saved = graph_api._load_entity_dict()["entities"]
+    assert "钙钛矿" in saved
+    assert "用户的研究方向包括高熵合金设计与性能优化" not in saved
+
+
+def test_a_failed_batch_is_skipped_not_mixed_into_the_graph(tmp_path, monkeypatch):
+    """部分批次抽取失败时，不能把"记忆整句当节点"的启发式结果混进语义图。
+
+    fallback 只在"全部批次都降级"时为 True，所以部分降级光看 fallback 发现不了；
+    degraded_batches 就是为这件事加的。
+    """
+    size = graph_api.GRAPH_BATCH_SIZE
+    memos = [{"id": "m%d" % i, "memory": "第 %d 条讲钙钛矿" % i, "category": "材料"}
+             for i in range(size * 3)]
+    calls = {"n": 0}
+
+    def fake_extract(chunk, known=None, known_rel=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return None
+        return {"nodes": [{"id": "n1", "label": "钙钛矿", "category": "材料"}], "edges": []}
+
+    def boom(_memos):
+        raise AssertionError("部分降级时不该走启发式")
+
+    monkeypatch.setattr(graph_api, "_fetch_memories", lambda: memos)
+    monkeypatch.setattr(graph_api, "_llm_extract", fake_extract)
+    monkeypatch.setattr(graph_api, "_heuristic_graph", boom)
+    monkeypatch.setattr(graph_api, "_graph_cache", lambda: {})
+    monkeypatch.setattr(graph_api, "_ENTITY_DICT_PATH", tmp_path / "entity_dict.json")
+    monkeypatch.setattr(graph_api, "_RELATION_DICT_PATH", tmp_path / "relation_dict.json")
+    monkeypatch.setattr(graph_api, "_ENTITY_MERGE_PATH", tmp_path / "entity_merge.json")
+
+    data = graph_api._build_graph()
+
+    assert data["degraded_batches"] == 1
+    assert data.get("fallback") is False
+    assert {n["label"] for n in data["nodes"]} == {"钙钛矿"}
+
+
+def test_all_batches_failed_still_returns_a_fallback_graph(tmp_path, monkeypatch):
+    """一批都没成功时必须还有图可看，此时才算真降级。"""
+    memos = [{"id": "m0", "memory": "钙钛矿长期稳定性差", "category": "结论"}]
+    monkeypatch.setattr(graph_api, "_fetch_memories", lambda: memos)
+    monkeypatch.setattr(graph_api, "_llm_extract", lambda *a, **k: None)
+    monkeypatch.setattr(graph_api, "_graph_cache", lambda: {})
+    monkeypatch.setattr(graph_api, "_ENTITY_DICT_PATH", tmp_path / "entity_dict.json")
+    monkeypatch.setattr(graph_api, "_RELATION_DICT_PATH", tmp_path / "relation_dict.json")
+    monkeypatch.setattr(graph_api, "_ENTITY_MERGE_PATH", tmp_path / "entity_merge.json")
+
+    data = graph_api._build_graph()
+
+    assert data.get("fallback") is True
+    assert data["degraded_batches"] == 0
+    assert data.get("nodes")
+
+
 def test_normalize_label_folds_subscripts():
     """Ce₀.₇₈ 与 Ce0.78 是同一种写法，比对时必须认成同一个。"""
     assert graph_api._normalize_label("Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ") == \

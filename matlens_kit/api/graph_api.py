@@ -147,7 +147,8 @@ def _fetch_memories(top_k: int = 200) -> List[Dict[str, Any]]:
 
 
 def _llm_extract(memos: List[Dict[str, Any]],
-                 known: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+                 known: Optional[List[str]] = None,
+                 known_rel: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """用 DeepSeek（OpenAI 兼容 client）从记忆文本抽取实体/关系（JSON）。失败返回 None。"""
     if not memos:
         return None
@@ -176,7 +177,10 @@ def _llm_extract(memos: List[Dict[str, Any]],
         "不要把别名、分子式、参数堆成一个长名字；② 关于用户的实体一律用「用户」，"
         "不要写姓名、学校、年级、身份；③ 同一实体的不同写法只能出现一个节点；"
         "④ 只要与下面「已有实体」里的某个名称指同一对象，就**原样使用那个名称**，"
-        "不要再缩短、改写或换一种说法——名字一旦变了，图上就会出现两个本该是一个的节点。"
+        "不要再缩短、改写或换一种说法——名字一旦变了，图上就会出现两个本该是一个的节点。\n"
+        "关系规则（重要）：⑤ 每条边的 label 只写一个 2–6 字的动词或动词短语；"
+        "含义相同时**必须复用「已有关系动词」里的原词**，不要换说法——"
+        "「用于」和「应用于」、「导致」和「引起」在图上会被当成两种不同的关系。"
     )
     known_hint = ""
     if known:
@@ -184,7 +188,13 @@ def _llm_extract(memos: List[Dict[str, Any]],
             "\n\n已有实体（若含义相同，请直接复用下列完全相同的名称，不要另起新名）：\n"
             + "、".join(known[:200])
         )
-    user_prompt = f"记忆列表：\n{corpus}{known_hint}\n\n请输出图谱 JSON。"
+    rel_hint = ""
+    if known_rel:
+        rel_hint = (
+            "\n\n已有关系动词（含义相同就原样复用，不要换一个近义词）：\n"
+            + "、".join(known_rel[:40])
+        )
+    user_prompt = f"记忆列表：\n{corpus}{known_hint}{rel_hint}\n\n请输出图谱 JSON。"
 
     try:
         client = OpenAI(base_url=_DEEPSEEK_BASE_URL, api_key=key, timeout=60)
@@ -403,7 +413,28 @@ def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
 
 _ENTITY_MERGE_PATH = Path(os.path.expanduser("~/.matlens/entity_merge.json"))
 _ENTITY_DICT_PATH = Path(os.path.expanduser("~/.matlens/entity_dict.json"))
+_RELATION_DICT_PATH = Path(os.path.expanduser("~/.matlens/relation_dict.json"))
 _dict_lock = threading.Lock()
+
+# 只收"换一个说法完全等价"的关系动词。语义确有差别的（「测试」与「表征」、
+# 「具有」与「包含」在材料语境里是两件事）不合并——硬合会把真实的区分抹掉，
+# 这正是上一轮拒绝"按关键词给关系分类上色"的同一条理由。
+_RELATION_SYNONYMS: Dict[str, Tuple[str, ...]] = {
+    "包含": ("包括", "含有", "涵盖"),
+    "属于": ("归类为", "归为"),
+    "用于": ("应用于", "采用", "使用", "借助", "利用"),
+    "导致": ("引起", "造成", "引发", "致使"),
+    "制备": ("合成", "制造", "生成"),
+    "改善": ("提升", "增强", "提高", "优化"),
+    "降低": ("减少", "削弱"),
+    "研究": ("探究", "考察"),
+    "影响": ("作用", "决定"),
+}
+_RELATION_CANON: Dict[str, str] = {}
+for _canon, _aliases in _RELATION_SYNONYMS.items():
+    _RELATION_CANON[_canon] = _canon
+    for _alias in _aliases:
+        _RELATION_CANON[_alias] = _canon
 
 
 def _fold_nodes(data: Dict[str, Any], label_map: Dict[str, str]) -> Dict[str, Any]:
@@ -533,6 +564,27 @@ def _dict_canonical_names() -> List[str]:
     return [k for k, _ in ranked if k]
 
 
+def _looks_like_entity_name(lb: str) -> bool:
+    """判断一个字符串像不像实体名，而不是被截断的整句记忆。
+
+    降级图（启发式）会把记忆原文截成节点名，这些名字一旦进词典，下一轮会被
+    当作「已有实体」原样喂回模型——模型于是照着长句继续起名，图就慢慢变成句子集合。
+
+    不能用"长度超过 N 就判句子"这种一刀切：化学式（Ce0.78Gd0.20Ca0.02O2-δ、
+    Ni₀.₈Co₀.₁Mn₀.₁(OH)₂）和英文期刊名（Journal of Materials Chemistry A）
+    本来就长，却都是货真价实的实体。真正要挡的是"含中文的长句子"。
+    """
+    if not lb or "…" in lb or lb.startswith("["):
+        return False
+    # 括号里的化学式不算句子成分，先剥掉再数
+    body = re.sub(r"（[^）]*）|\([^)]*\)", "", lb)
+    if not re.search(r"[\u4e00-\u9fff]", body):
+        # 纯英文/化学式：期刊名最长也就三十来字
+        return len(lb) <= 40
+    # 含中文的：实体名很少超过 16 字，超过基本是把一句话截下来了
+    return len(body.strip()) <= 16
+
+
 def _apply_entity_dict(data: Dict[str, Any]) -> Dict[str, Any]:
     """把节点名对齐到词典里的规范名，并把这次见到的新名字登记进词典。
 
@@ -559,14 +611,18 @@ def _apply_entity_dict(data: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             key = _normalize_label(lb)
             canon = index.get(key) or lb
+            is_new = canon not in ents
             if canon != lb:
                 label_map[lb] = canon
-                info = ents.setdefault(canon, {"category": None, "aliases": [], "seen": 0})
+            if is_new and not _looks_like_entity_name(canon):
+                # 整句记忆不是实体。降级图把记忆截断当节点，一旦登记进词典，
+                # 下一轮就会被当成「已有实体」原样喂回模型，一轮轮把图撑成句子集合。
+                continue
+            info = ents.setdefault(canon, {"category": None, "aliases": [], "seen": 0})
+            if canon != lb:
                 al = info.setdefault("aliases", [])
                 if lb not in al:
                     al.append(lb)
-            else:
-                info = ents.setdefault(canon, {"category": None, "aliases": [], "seen": 0})
             info["seen"] = int(info.get("seen") or 0) + 1
             if n.get("category"):
                 info["category"] = n.get("category")
@@ -576,6 +632,68 @@ def _apply_entity_dict(data: Dict[str, Any]) -> Dict[str, Any]:
     if label_map:
         return _fold_nodes(data, label_map)
     return data
+
+
+def _load_relation_dict() -> Dict[str, Any]:
+    """读本机关系动词词典。和实体词典同一个道理：同一批记忆重建多次要用同一批动词。"""
+    try:
+        raw = json.loads(_RELATION_DICT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"relations": {}}
+    if not isinstance(raw, dict):
+        return {"relations": {}}
+    rels = raw.get("relations")
+    out: Dict[str, Any] = {}
+    if isinstance(rels, dict):
+        for key, item in rels.items():
+            lb = str(key or "").strip()
+            if not lb or not isinstance(item, dict):
+                continue
+            out[lb] = {"seen": item.get("seen") if isinstance(item.get("seen"), int) else 0}
+    return {"relations": out}
+
+
+def _save_relation_dict(d: Dict[str, Any]) -> None:
+    try:
+        _RELATION_DICT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RELATION_DICT_PATH.write_text(
+            json.dumps({"updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "relations": d.get("relations", {})},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _relation_canonical_names(limit: int = 40) -> List[str]:
+    """词典里出现次数最多的关系动词，按频次倒序——先给模型最常用的那些。"""
+    rels = _load_relation_dict().get("relations", {})
+    if not isinstance(rels, dict):
+        return []
+    ranked = sorted(rels.items(), key=lambda kv: -((kv[1] or {}).get("seen") or 0))
+    return [k for k, _ in ranked][:limit]
+
+
+def _apply_relation_dict(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把边的动词对齐到同义词的规范形式，并把这次见到的动词记进词典。"""
+    if not edges:
+        return edges
+    with _dict_lock:
+        d = _load_relation_dict()
+        rels = d.setdefault("relations", {})
+        if not isinstance(rels, dict):
+            rels = {}
+            d["relations"] = rels
+        for e in edges:
+            lb = str(e.get("label") or "").strip()
+            if not lb:
+                continue
+            canon = _RELATION_CANON.get(lb, lb)
+            if canon != lb:
+                e["label"] = canon
+            rels[canon] = {"seen": int((rels.get(canon) or {}).get("seen") or 0) + 1}
+        _save_relation_dict(d)
+    return edges
 
 
 def _load_entity_merge() -> List[Dict[str, Any]]:
@@ -768,30 +886,57 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
     # 同一批记忆在多次重建中得到同一套实体名——名字一漂，按名字写的归并配置和
     # 前后两次的结构对比就全部失效。
     known: List[str] = _dict_canonical_names()
+    cached = _graph_cache() or {}
     if not known:
-        cached = _graph_cache() or {}
         known = [str(n.get("label") or "").strip()
                  for n in (cached.get("nodes") or [])
                  if isinstance(n, dict) and str(n.get("label") or "").strip()]
+    # 关系动词同理：上次用过哪些动词就继续用哪些，否则同一对实体每次会被换成近义词，
+    # 边数跟着抖、图看起来一天一个样。
+    known_rel: List[str] = _relation_canonical_names()
+    if not known_rel:
+        known_rel = [str(e.get("label") or "").strip()
+                     for e in (cached.get("edges") or [])
+                     if isinstance(e, dict) and str(e.get("label") or "").strip()]
+    degraded_batches = 0
     for start in range(0, len(memos), GRAPH_BATCH_SIZE):
         chunk = memos[start:start + GRAPH_BATCH_SIZE]
         # 把前面批次已抽到的实体名带上，让后一批复用同名而不是另起一套写法
-        data = _llm_extract(chunk, known)
+        data = _llm_extract(chunk, known, known_rel)
         if data is None:
-            data = _heuristic_graph(chunk)
+            # 这一批模型没给结果：**不把启发式结果混进语义图**。启发式把记忆整句
+            # 当节点、把类别名当关系，混进来既拉偏结构，又会被登记成"实体名"
+            # 在下一轮当作「已有实体」喂回模型，越滚越大。
+            # 宁可少几批的实体，也不要假节点。
+            degraded_batches += 1
+            continue
         parts.append(data)
         for n in (data.get("nodes") or []) if isinstance(data, dict) else []:
             label = str(n.get("label") or "").strip()
             if label and label not in known:
                 known.append(label)
+        for e in (data.get("edges") or []) if isinstance(data, dict) else []:
+            rel = str(e.get("label") or "").strip()
+            if rel and rel not in known_rel:
+                known_rel.append(rel)
+
+    if not parts:
+        # 一批都没抽出来：退回启发式，至少让页面还有东西看
+        parts = [_heuristic_graph(memos)]
+        degraded_batches = 0
 
     data = _merge_graph_parts(parts)
-    # 先对齐词典（名字层面），再套人工归并配置（语义层面），最后补桥
+    # 关系动词先对齐（明确的同义写法收成一个），并记进动词词典供下次复用
+    data["edges"] = _apply_relation_dict(data.get("edges") or [])
+    # 再对齐实体词典（名字层面），最后套人工归并配置（语义层面）
     data = _apply_entity_dict(data)
     data = _apply_entity_merge(data)
     fell_back = bool(parts) and all(
         isinstance(p, dict) and p.get("fallback") for p in parts
     )
+    # 部分批次没抽出来时 fallback 仍是 False，光看它发现不了图被"少画了一块"。
+    # 单独报出来，前端可以明说"这次有 N 批记忆没能抽取，已跳过"。
+    data["degraded_batches"] = degraded_batches
 
     # 分批把图切成了几块，用同条记忆共现补桥（不覆盖模型给的关系）
     for bridge in _cooc_bridges(data.get("nodes", []), memos, data.get("edges", [])):
@@ -800,6 +945,18 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
 
     # 疑似同物异名：只提示，不替用户合并（见 _merge_candidates 的取舍说明）
     data["merge_candidates"] = _merge_candidates(data.get("nodes", []))
+
+    # 关系动词收敛度：92 种动词里 63 种只出现一次，说明同一类关系被写成了几十种说法，
+    # 图看起来每天都在变。这个指标放进图里让前端能显示，改一次就能看到有没有收敛。
+    rel_counts: Dict[str, int] = {}
+    for e in data.get("edges") or []:
+        lb = str(e.get("label") or "")
+        rel_counts[lb] = rel_counts.get(lb, 0) + 1
+    data["relation_stats"] = {
+        "total": sum(rel_counts.values()),
+        "unique": len(rel_counts),
+        "once": sum(1 for v in rel_counts.values() if v == 1),
+    }
 
     # 着色 + 尺寸
     for n in data.get("nodes", []):
