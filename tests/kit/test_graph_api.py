@@ -395,3 +395,70 @@ def test_apply_entity_merge_skips_groups_whose_canonical_is_absent(tmp_path, mon
 
     assert len(out["nodes"]) == 1
     assert "merged_labels" not in out
+
+
+def test_fold_nodes_merges_and_repoints_edges():
+    data = {"nodes": [{"id": "n0", "label": "规范名", "category": "材料"},
+                      {"id": "n1", "label": "旧写法", "category": "材料"},
+                      {"id": "n2", "label": "别的", "category": "方法"}],
+            "edges": [{"id": "e0", "source": "n1", "target": "n2", "label": "用"},
+                      {"id": "e1", "source": "n0", "target": "n1", "label": "别名"}]}
+
+    out = graph_api._fold_nodes(data, {"旧写法": "规范名"})
+
+    assert [n["id"] for n in out["nodes"]] == ["n0", "n2"]
+    assert out["nodes"][0]["aliases"] == ["旧写法"]
+    assert [(e["source"], e["target"]) for e in out["edges"]] == [("n0", "n2")]
+
+
+def test_entity_dict_records_names_for_later_builds(tmp_path, monkeypatch):
+    monkeypatch.setattr(graph_api, "_ENTITY_DICT_PATH", tmp_path / "entity_dict.json")
+
+    graph_api._apply_entity_dict({
+        "nodes": [{"id": "n0", "label": "GDC-Ca共掺杂", "category": "材料"},
+                  {"id": "n1", "label": "用户", "category": "用户"}],
+        "edges": [],
+    })
+
+    assert set(graph_api._dict_canonical_names()) == {"GDC-Ca共掺杂", "用户"}
+
+
+def test_entity_dict_folds_a_spelling_it_has_seen(tmp_path, monkeypatch):
+    """词典的价值在于跨重建复用同一个名字，而不是每次让模型重新命名。"""
+    monkeypatch.setattr(graph_api, "_ENTITY_DICT_PATH", tmp_path / "entity_dict.json")
+
+    graph_api._apply_entity_dict({
+        "nodes": [{"id": "n0", "label": "Ce₀.₇₈O₂₋δ", "category": "材料"}],
+        "edges": [],
+    })
+    out = graph_api._apply_entity_dict({
+        "nodes": [{"id": "n0", "label": "Ce0.78O2-δ", "category": "材料"}],
+        "edges": [],
+    })
+
+    assert out["nodes"][0]["label"] == "Ce₀.₇₈O₂₋δ"
+    assert "Ce0.78O2-δ" in out["nodes"][0]["aliases"]
+
+
+def test_merge_endpoint_writes_config_and_applies_immediately(tmp_path, monkeypatch):
+    cfg = tmp_path / "entity_merge.json"
+    cfg.write_text(json.dumps({"groups": [], "rejected": [{"a": "X", "b": "Y", "why": "不同"}]},
+                              ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(graph_api, "_ENTITY_MERGE_PATH", cfg)
+
+    cached = {"nodes": [{"id": "n0", "label": "A材料", "category": "材料"},
+                        {"id": "n1", "label": "A化学式", "category": "材料"}],
+              "edges": [{"id": "e0", "source": "n1", "target": "n0", "label": "别名"}]}
+    monkeypatch.setattr(graph_api, "_graph_cache", lambda: cached)
+    saved = {}
+    monkeypatch.setattr(graph_api, "_save_cache", lambda g: saved.update(g))
+
+    res = graph_api.merge_entities(graph_api.MergeBody(a="A材料", b="A化学式", keep="a"))
+
+    assert res["ok"] is True
+    written = json.loads(cfg.read_text(encoding="utf-8"))
+    assert written["groups"][0]["canonical"] == "A材料"
+    assert written["groups"][0]["aliases"] == ["A化学式"]
+    # 人工判定为不同实体的记录不能被这次写入冲掉
+    assert written["rejected"][0]["a"] == "X"
+    assert len(saved["nodes"]) == 1

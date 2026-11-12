@@ -402,6 +402,180 @@ def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
 
 
 _ENTITY_MERGE_PATH = Path(os.path.expanduser("~/.matlens/entity_merge.json"))
+_ENTITY_DICT_PATH = Path(os.path.expanduser("~/.matlens/entity_dict.json"))
+_dict_lock = threading.Lock()
+
+
+def _fold_nodes(data: Dict[str, Any], label_map: Dict[str, str]) -> Dict[str, Any]:
+    """按 label_map 把节点改成规范名，并把因此重名的节点并成一个。
+
+    只影响 label，不动 id；被并掉的写法收进保留节点的 aliases，边重新指向保留节点。
+    自环和重复边（同源同目标同 label）在这一步一并丢掉。
+    """
+    nodes = data.get("nodes") or []
+    if not nodes:
+        return data
+
+    renamed: List[Dict[str, Any]] = []
+    for n in nodes:
+        n = dict(n)
+        lb = str(n.get("label") or "")
+        canon = label_map.get(lb, lb)
+        if canon != lb:
+            n["label"] = canon
+            al = list(n.get("aliases") or [])
+            if lb not in al:
+                al.append(lb)
+            n["aliases"] = al
+        renamed.append(n)
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for n in renamed:
+        groups.setdefault(_normalize_label(n.get("label")), []).append(n)
+
+    remap: Dict[str, str] = {}
+    kept: List[Dict[str, Any]] = []
+    for _key, members in groups.items():
+        if len(members) == 1:
+            kept.append(members[0])
+            continue
+        target = members[0]
+        for m in members[1:]:
+            remap[m["id"]] = target["id"]
+            al = target.setdefault("aliases", [])
+            for a in list(m.get("aliases") or []) + [str(m.get("label") or "")]:
+                if a and a != target["label"] and a not in al:
+                    al.append(a)
+        kept.append(target)
+
+    data["nodes"] = kept
+    if not remap:
+        return data
+
+    seen = set()
+    edges: List[Dict[str, Any]] = []
+    for e in data.get("edges") or []:
+        src = remap.get(e.get("source"), e.get("source"))
+        dst = remap.get(e.get("target"), e.get("target"))
+        if not src or not dst or src == dst:
+            continue
+        key = (src, dst, str(e.get("label") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        e2 = dict(e)
+        e2["source"], e2["target"] = src, dst
+        edges.append(e2)
+    data["edges"] = edges
+    return data
+
+
+def _load_entity_dict() -> Dict[str, Any]:
+    """读本机实体词典（~/.matlens/entity_dict.json）。
+
+    词典的作用是让实体名跨重建稳定：第一次自由抽取后，把当时的名字记下来，
+    以后每次重建都复用同一批名字，而不是每回都让模型重新命名一遍。
+    """
+    try:
+        raw = json.loads(_ENTITY_DICT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"entities": {}}
+    if not isinstance(raw, dict):
+        return {"entities": {}}
+    ents = raw.get("entities")
+    out: Dict[str, Any] = {}
+    # 落盘格式是 {规范名: {category, aliases, seen}}，规范名本身就是 key；
+    # 也兼容数组格式（每条自带 canonical/label）。
+    if isinstance(ents, dict):
+        for key, item in ents.items():
+            canon = str(key or "").strip()
+            if not canon or not isinstance(item, dict):
+                continue
+            out[canon] = {
+                "category": item.get("category"),
+                "aliases": [str(a).strip() for a in (item.get("aliases") or []) if str(a).strip()],
+                "seen": item.get("seen") if isinstance(item.get("seen"), int) else 0,
+            }
+    elif isinstance(ents, list):
+        for item in ents:
+            if not isinstance(item, dict):
+                continue
+            canon = str(item.get("canonical") or item.get("label") or "").strip()
+            if not canon:
+                continue
+            out[canon] = {
+                "category": item.get("category"),
+                "aliases": [str(a).strip() for a in (item.get("aliases") or []) if str(a).strip()],
+                "seen": item.get("seen") if isinstance(item.get("seen"), int) else 0,
+            }
+    return {"entities": out}
+
+
+def _save_entity_dict(d: Dict[str, Any]) -> None:
+    try:
+        _ENTITY_DICT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _ENTITY_DICT_PATH.write_text(
+            json.dumps({"updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "entities": d.get("entities", {})},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _dict_canonical_names() -> List[str]:
+    """词典里已经见过的规范名，按出现次数排序——次数多的先传给模型。"""
+    ents = _load_entity_dict().get("entities", {})
+    if not isinstance(ents, dict):
+        return []
+    ranked = sorted(ents.items(),
+                    key=lambda kv: -(kv[1].get("seen") or 0) if isinstance(kv[1], dict) else 0)
+    return [k for k, _ in ranked if k]
+
+
+def _apply_entity_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """把节点名对齐到词典里的规范名，并把这次见到的新名字登记进词典。
+
+    命中规则：归一后相等，或命中了词典里某条的 aliases。没命中的就是新实体，
+    登记为独立条目（seen 计数 +1），下次重建时它也会变成要复用的名字。
+    """
+    with _dict_lock:
+        d = _load_entity_dict()
+        ents = d.setdefault("entities", {})
+        if not isinstance(ents, dict):
+            ents = {}
+            d["entities"] = ents
+
+        index: Dict[str, str] = {}
+        for canon, info in ents.items():
+            index.setdefault(_normalize_label(canon), canon)
+            for a in (info.get("aliases") or []):
+                index.setdefault(_normalize_label(a), canon)
+
+        label_map: Dict[str, str] = {}
+        for n in data.get("nodes") or []:
+            lb = str(n.get("label") or "")
+            if not lb:
+                continue
+            key = _normalize_label(lb)
+            canon = index.get(key) or lb
+            if canon != lb:
+                label_map[lb] = canon
+                info = ents.setdefault(canon, {"category": None, "aliases": [], "seen": 0})
+                al = info.setdefault("aliases", [])
+                if lb not in al:
+                    al.append(lb)
+            else:
+                info = ents.setdefault(canon, {"category": None, "aliases": [], "seen": 0})
+            info["seen"] = int(info.get("seen") or 0) + 1
+            if n.get("category"):
+                info["category"] = n.get("category")
+
+        _save_entity_dict(d)
+
+    if label_map:
+        return _fold_nodes(data, label_map)
+    return data
 
 
 def _load_entity_merge() -> List[Dict[str, Any]]:
@@ -500,6 +674,23 @@ def _apply_entity_merge(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def _save_entity_merge(groups: List[Dict[str, Any]]) -> None:
+    """把归并组写回配置文件，保留 rejected 等人工判断记录。"""
+    try:
+        raw = json.loads(_ENTITY_MERGE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    if isinstance(raw, list):
+        raw = {"groups": raw}
+    if not isinstance(raw, dict):
+        raw = {}
+    raw["groups"] = groups
+    raw["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _ENTITY_MERGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ENTITY_MERGE_PATH.write_text(
+        json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 COOC_BRIDGE_LABEL = "同条记忆提及"
 
 
@@ -573,12 +764,15 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
         return {"nodes": [], "edges": [], "empty": True, "message": "暂无记忆可供构图"}
 
     parts: List[Any] = []
-    # 从上一版图的名字起步，而不是从空开始：否则每次重建模型都会另起一套写法，
-    # 用户看到的实体名跟着图一起漂，按名字写的归并配置也会全部失效。
-    cached = _graph_cache() or {}
-    known: List[str] = [str(n.get("label") or "").strip()
-                        for n in (cached.get("nodes") or [])
-                        if isinstance(n, dict) and str(n.get("label") or "").strip()]
+    # 优先复用词典里的规范名；词典为空时才回落到上一版图的名字。两条都是为了让
+    # 同一批记忆在多次重建中得到同一套实体名——名字一漂，按名字写的归并配置和
+    # 前后两次的结构对比就全部失效。
+    known: List[str] = _dict_canonical_names()
+    if not known:
+        cached = _graph_cache() or {}
+        known = [str(n.get("label") or "").strip()
+                 for n in (cached.get("nodes") or [])
+                 if isinstance(n, dict) and str(n.get("label") or "").strip()]
     for start in range(0, len(memos), GRAPH_BATCH_SIZE):
         chunk = memos[start:start + GRAPH_BATCH_SIZE]
         # 把前面批次已抽到的实体名带上，让后一批复用同名而不是另起一套写法
@@ -592,7 +786,8 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
                 known.append(label)
 
     data = _merge_graph_parts(parts)
-    # 先按人工复核过的配置归一，再补桥：归一之后很多对本来就连通了，桥会更少
+    # 先对齐词典（名字层面），再套人工归并配置（语义层面），最后补桥
+    data = _apply_entity_dict(data)
     data = _apply_entity_merge(data)
     fell_back = bool(parts) and all(
         isinstance(p, dict) and p.get("fallback") for p in parts
@@ -693,6 +888,59 @@ def _kick_rebuild(previous: Optional[Dict[str, Any]] = None) -> None:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+class MergeBody(BaseModel):
+    a: str
+    b: str
+    keep: Optional[str] = None
+    why: Optional[str] = None
+
+
+@_router.post("/merge")
+def merge_entities(body: MergeBody) -> Dict[str, Any]:
+    """把两个实体合成一个，写进人工归并配置并立即应用到当前缓存图。
+
+    判断权在用户手里：候选只是提示，这里才真正改图。合错了可以删掉配置里对应
+    条目再重建一次就恢复，所以它不是不可逆操作。
+    """
+    a = str(body.a or "").strip()
+    b = str(body.b or "").strip()
+    if not a or not b or a == b:
+        raise HTTPException(status_code=400, detail="需要两个不同的实体名")
+    keep = b if str(body.keep or "").strip().lower() == "b" else a
+    drop = b if keep == a else a
+
+    groups = _load_entity_merge()
+    target = next((g for g in groups if g["canonical"] == keep), None)
+    if target is None:
+        groups.append({"canonical": keep, "aliases": [drop],
+                       "why": body.why or "用户在图上手动合并"})
+    else:
+        if drop not in target["aliases"]:
+            target["aliases"].append(drop)
+        if body.why:
+            target["why"] = body.why
+    _save_entity_merge(groups)
+
+    with _graph_lock:
+        cached = _graph_cache()
+        if not cached.get("nodes"):
+            raise HTTPException(status_code=409, detail="当前没有可合并的图谱")
+        data = _apply_entity_merge(cached)
+        for n in data.get("nodes") or []:
+            n["color"] = CATEGORY_COLORS.get(n.get("category", "其他"),
+                                             CATEGORY_COLORS["其他"])
+            n.setdefault("val", 1)
+        _save_cache(data)
+
+    return {
+        "ok": True,
+        "merged": data.get("merged_labels"),
+        "nodes": len(data.get("nodes") or []),
+        "edges": len(data.get("edges") or []),
+        "message": "已合并「%s」到「%s」，可删除 ~/.matlens/entity_merge.json 中对应条目撤销" % (drop, keep),
+    }
+
+
 @_router.get("")
 def get_graph() -> Dict[str, Any]:
     """返回当前图谱。自动构建开启时：优先缓存，无缓存则即时从记忆构图。

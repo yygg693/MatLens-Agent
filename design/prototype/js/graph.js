@@ -288,6 +288,26 @@ function _renderDetailPanel(nodeId) {
           esc(node.merged_why) + '</div>'
         : '')
     : '';
+  // 可能同物异名：只给证据，点「合并到此」才真正合并（写进本机配置，可撤销）
+  const cands = ((_rawGraph && _rawGraph.merge_candidates) || []).filter(
+    c => String(c.a) === String(nodeId) || String(c.b) === String(nodeId));
+  const candHtml = cands.length
+    ? '<div style="margin:10px 0 8px;padding-top:9px;border-top:1px dashed var(--ml-border)">' +
+      '<div style="font-size:11.5px;color:#cbd5e1;margin-bottom:5px">可能指同一个实体</div>' +
+      cands.map(c => {
+        const other = String(c.a) === String(nodeId) ? c.b_label : c.a_label;
+        return '<div style="display:flex;align-items:center;gap:7px;padding:3px 0">' +
+          '<span style="flex:1;min-width:0;font-size:11.5px;color:var(--ml-text-dim);' +
+          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(other) +
+          ' <span style="color:var(--ml-text-faint)">· ' + esc(c.reason || '') + '</span></span>' +
+          '<button data-g3-merge="' + esc(other) + '" style="flex:none;padding:3px 7px;' +
+          'border-radius:6px;border:1px solid rgba(56,189,248,0.45);background:rgba(56,189,248,0.12);' +
+          'color:#7dd3fc;font-size:11px;cursor:pointer;font-family:inherit">合并到此</button></div>';
+      }).join('') +
+      '<div style="font-size:10.5px;color:var(--ml-text-faint);line-height:1.6;margin-top:3px">' +
+      '合并会写进本机配置，删掉对应条目就能撤销。</div></div>'
+    : '';
+
   panel.innerHTML =
     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
     '<button data-g3-back style="background:none;border:0;color:#7dd3fc;font-size:11.5px;cursor:pointer;padding:0">← 全部脑区</button>' +
@@ -295,9 +315,36 @@ function _renderDetailPanel(nodeId) {
     '<div style="font-weight:700;margin-bottom:4px;font-size:14px">' + esc(node.label || node.id) + '</div>' +
     '<div style="font-size:11px;color:var(--ml-text-faint);margin-bottom:10px">' + esc(cat) + ' · ' + rel.length + ' 条关联</div>' +
     aliasHtml +
+    candHtml +
     '<div style="font-size:12px;color:var(--ml-text-dim);line-height:1.7;margin-bottom:8px">' +
     '该实体由 DeepSeek 从对话记忆中抽取，来源为本项目积累的材料科研对话。</div>' +
     (relHtml || '<div style="font-size:12px;color:var(--ml-text-faint)">暂无关联关系</div>');
+  panel.querySelectorAll('[data-g3-merge]').forEach(btn => {
+    btn.onclick = () => {
+      const other = btn.getAttribute('data-g3-merge');
+      if (!other) return;
+      btn.disabled = true;
+      btn.textContent = '合并中…';
+      fetch('/api/graph/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ a: node.label, b: other, keep: 'a' }),
+      })
+        .then(r => r.json().then(body => ({ ok: r.ok, body })))
+        .then(({ ok, body }) => {
+          if (!ok || !body.ok) throw new Error(body.detail || '合并失败');
+          if (_g3) { _g3.sel = null; _g3.hover = null; _g3.focus = null; }
+          _graphFetchAt = 0;
+          return loadGraph(true);
+        })
+        .catch(err => {
+          btn.disabled = false;
+          btn.textContent = '合并到此';
+          console.warn('merge-entity failed:', err);
+        });
+    };
+  });
+
   const back = panel.querySelector('[data-g3-back]');
   if (back) {
     back.onclick = () => {
