@@ -145,7 +145,8 @@ def _fetch_memories(top_k: int = 200) -> List[Dict[str, Any]]:
         return []
 
 
-def _llm_extract(memos: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _llm_extract(memos: List[Dict[str, Any]],
+                 known: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """用 DeepSeek（OpenAI 兼容 client）从记忆文本抽取实体/关系（JSON）。失败返回 None。"""
     if not memos:
         return None
@@ -169,9 +170,18 @@ def _llm_extract(memos: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         '"edges":[{"source":"节点id","target":"节点id","label":"关系"}]}\n'
         "规则：节点去重；实体优先归为四类——材料(物质/组分/体系)、方法(合成/表征/测试手段)、"
         "性质(性能/现象/规律)、参数(数值/条件/配比)；边表示'属于/用于/导致/偏好/得出/测试'等科研关系；"
-        "id 用英文短词或数字，保持引用一致；只输出 JSON，不要多余文字。"
+        "id 用英文短词或数字，保持引用一致；只输出 JSON，不要多余文字。\n"
+        "命名规则（重要）：① 每个实体只用一个规范名，取记忆里最短通行写法（不超过 16 字），"
+        "不要把别名、分子式、参数堆成一个长名字；② 关于用户的实体一律用「用户」，"
+        "不要写姓名、学校、年级、身份；③ 同一实体的不同写法只能出现一个节点。"
     )
-    user_prompt = f"记忆列表：\n{corpus}\n\n请输出图谱 JSON。"
+    known_hint = ""
+    if known:
+        known_hint = (
+            "\n\n已有实体（若含义相同，请直接复用下列完全相同的名称，不要另起新名）：\n"
+            + "、".join(known[:150])
+        )
+    user_prompt = f"记忆列表：\n{corpus}{known_hint}\n\n请输出图谱 JSON。"
 
     try:
         client = OpenAI(base_url=_DEEPSEEK_BASE_URL, api_key=key, timeout=60)
@@ -268,9 +278,77 @@ def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
             if key in seen:
                 continue
             seen.add(key)
-            edges.append({"id": "e%d" % len(edges), "source": src, "target": dst, "label": rel})
+            edges.append({"id": "e%d" % len(edges), "source": src, "target": dst,
+                          "label": rel, "kind": "semantic"})
 
     return {"nodes": nodes, "edges": edges}
+
+
+COOC_BRIDGE_LABEL = "同条记忆提及"
+
+
+def _cooc_bridges(nodes: List[Dict[str, Any]],
+                  memos: List[Dict[str, Any]],
+                  edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """同一条记忆里一起出现的两个实体，补一条桥接边。
+
+    分批抽取有个代价：模型每批只看得到自己那几十条，批与批之间的实体它连不起来，
+    于是一张图被切成几块互不相通的岛。这里用最朴素的证据把岛接起来——两个实体
+    出现在同一条记忆里。
+
+    只补"能把两块断开的连起来"的那些（按同框次数优先），不是把所有同框对都画出来：
+    短名实体（用户、GDC）几乎在每条记忆里都出现，全补会得到几百条噪声边。
+    语义边已经连通的两点不再补，并且统一标 kind="cooc"，免得被当成模型给出的关系。
+    """
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    existing = set()
+    for e in edges:
+        a, b = str(e.get("source")), str(e.get("target"))
+        existing.add(tuple(sorted((a, b))))
+        union(a, b)
+
+    # 长 label 先匹配，命中后占位，防止短 label 在长 label 内部重复命中
+    order = sorted(nodes, key=lambda n: -len(str(n.get("label") or "")))
+    pairs: Dict[Any, int] = {}
+    for m in memos:
+        text = str(m.get("memory") or m.get("text") or "").casefold()
+        if not text:
+            continue
+        hits: List[str] = []
+        for n in order:
+            lb = str(n.get("label") or "").casefold().strip()
+            if len(lb) < 2 or lb not in text:
+                continue
+            text = text.replace(lb, "\u0001")
+            hits.append(str(n.get("id")))
+        for i in range(len(hits)):
+            for j in range(i + 1, len(hits)):
+                pair = tuple(sorted((hits[i], hits[j])))
+                if pair[0] == pair[1] or pair in existing:
+                    continue
+                pairs[pair] = pairs.get(pair, 0) + 1
+
+    out: List[Dict[str, Any]] = []
+    for (a, b), count in sorted(pairs.items(), key=lambda kv: -kv[1]):
+        if find(a) == find(b):
+            continue  # 这两块本来就通着，再补一条只是噪声
+        union(a, b)
+        out.append({"source": a, "target": b, "label": COOC_BRIDGE_LABEL,
+                    "kind": "cooc", "weight": count})
+    return out
 
 
 def _build_graph(force: bool = False) -> Dict[str, Any]:
@@ -279,17 +357,28 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
         return {"nodes": [], "edges": [], "empty": True, "message": "暂无记忆可供构图"}
 
     parts: List[Any] = []
+    known: List[str] = []
     for start in range(0, len(memos), GRAPH_BATCH_SIZE):
         chunk = memos[start:start + GRAPH_BATCH_SIZE]
-        data = _llm_extract(chunk)
+        # 把前面批次已抽到的实体名带上，让后一批复用同名而不是另起一套写法
+        data = _llm_extract(chunk, known)
         if data is None:
             data = _heuristic_graph(chunk)
         parts.append(data)
+        for n in (data.get("nodes") or []) if isinstance(data, dict) else []:
+            label = str(n.get("label") or "").strip()
+            if label and label not in known:
+                known.append(label)
 
     data = _merge_graph_parts(parts)
     fell_back = bool(parts) and all(
         isinstance(p, dict) and p.get("fallback") for p in parts
     )
+
+    # 分批把图切成了几块，用同条记忆共现补桥（不覆盖模型给的关系）
+    for bridge in _cooc_bridges(data.get("nodes", []), memos, data.get("edges", [])):
+        bridge["id"] = "e%d" % len(data["edges"])
+        data["edges"].append(bridge)
 
     # 着色 + 尺寸
     for n in data.get("nodes", []):

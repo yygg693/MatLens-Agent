@@ -187,3 +187,99 @@ def test_manual_extract_writes_when_extraction_succeeds(monkeypatch, tmp_path):
     assert out.get("skipped") is None
     saved = json.loads(cache.read_text(encoding="utf-8"))
     assert saved["nodes"][0]["label"] == "新"
+
+
+def test_cooc_bridges_join_entities_that_share_a_memory():
+    """分批抽取连不起来的两批实体，靠同条记忆共现补桥。"""
+    nodes = [{"id": "n0", "label": "钙钛矿"}, {"id": "n1", "label": "旋涂法"}]
+    memos = [{"memory": "[方法] 钙钛矿用旋涂法制备"}]
+
+    bridges = graph_api._cooc_bridges(nodes, memos, [])
+
+    assert len(bridges) == 1
+    assert bridges[0]["kind"] == "cooc"
+    assert {bridges[0]["source"], bridges[0]["target"]} == {"n0", "n1"}
+
+
+def test_cooc_bridges_do_not_duplicate_semantic_edges():
+    nodes = [{"id": "n0", "label": "钙钛矿"}, {"id": "n1", "label": "旋涂法"}]
+    memos = [{"memory": "钙钛矿用旋涂法制备"}]
+    edges = [{"id": "e0", "source": "n1", "target": "n0", "label": "用", "kind": "semantic"}]
+
+    assert graph_api._cooc_bridges(nodes, memos, edges) == []
+
+
+def test_cooc_bridges_match_longest_label_first():
+    """短 label 命中长 label 内部时不能算两个实体，否则会凭空多出一对。"""
+    nodes = [{"id": "n0", "label": "Gd掺杂CeO2"},
+             {"id": "n1", "label": "GDC-Ca共掺杂电解质"},
+             {"id": "n2", "label": "阻抗"}]
+    memos = [{"memory": "测试 Gd掺杂CeO2 的阻抗"}]
+
+    bridges = graph_api._cooc_bridges(nodes, memos, [])
+
+    assert len(bridges) == 1
+    assert {bridges[0]["source"], bridges[0]["target"]} == {"n0", "n2"}
+
+
+def test_cooc_bridges_only_bridge_the_gap():
+    """三个实体同框，但其中两点已有语义边：只补一条能连上第三点的桥。"""
+    nodes = [{"id": "n0", "label": "钙钛矿"},
+             {"id": "n1", "label": "旋涂法"},
+             {"id": "n2", "label": "阻抗"}]
+    memos = [{"memory": "钙钛矿旋涂法测阻抗"}]
+    edges = [{"id": "e0", "source": "n0", "target": "n1", "label": "用", "kind": "semantic"}]
+
+    bridges = graph_api._cooc_bridges(nodes, memos, edges)
+
+    assert len(bridges) == 1
+    assert "n2" in (bridges[0]["source"], bridges[0]["target"])
+
+
+def test_cooc_bridges_stop_when_the_graph_is_already_connected():
+    """已经连通就不再补，否则短名实体（用户/GDC）会长出几百条噪声边。"""
+    nodes = [{"id": "n0", "label": "钙钛矿"},
+             {"id": "n1", "label": "阻抗"}]
+    memos = [{"memory": "钙钛矿的阻抗"}, {"memory": "钙钛矿阻抗偏高"}]
+    edges = [{"id": "e0", "source": "n0", "target": "n1", "label": "有", "kind": "semantic"}]
+
+    assert graph_api._cooc_bridges(nodes, memos, edges) == []
+
+
+def test_cooc_bridges_skip_single_mention_memories():
+    nodes = [{"id": "n0", "label": "钙钛矿"}]
+    memos = [{"memory": "钙钛矿的长期稳定性"}]
+
+    assert graph_api._cooc_bridges(nodes, memos, []) == []
+
+
+def test_llm_extract_hands_known_labels_to_the_model(monkeypatch):
+    """后一批要复用前一批的实体名，否则同一个人被抽成三个节点。"""
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"nodes":[],"edges":[]}'))]
+        )
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+
+    import openai
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(graph_api, "_get_deepseek_key", lambda: "sk-test")
+    monkeypatch.setattr(graph_api, "_DEEPSEEK_BASE_URL", "https://example.com/v1")
+
+    graph_api._llm_extract(
+        [{"id": "1", "memory": "钙钛矿长期稳定性差", "category": "结论"}],
+        ["固态电池", "用户"],
+    )
+
+    user_prompt = captured["messages"][1]["content"]
+    assert "固态电池" in user_prompt and "用户" in user_prompt
+    assert "复用" in user_prompt

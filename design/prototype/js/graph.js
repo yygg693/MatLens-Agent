@@ -132,8 +132,8 @@ function _layoutBrain(nodes, edges) {
     const a = idx.get(String(e.source));
     const b = idx.get(String(e.target));
     if (a === undefined || b === undefined || a === b) return;
-    es.push({ a, b, label: String(e.label || ''), sx0: 0, sy0: 0, sx1: 0, sy1: 0,
-              cxp: 0, cyp: 0, z: 0, sr: 0 });
+    es.push({ a, b, label: String(e.label || ''), bridge: String(e.kind || '') === 'cooc',
+              sx0: 0, sy0: 0, sx1: 0, sy1: 0, cxp: 0, cyp: 0, z: 0, sr: 0 });
     out[a].deg++;
     out[b].deg++;
   });
@@ -750,7 +750,7 @@ function _drawBrain(st, now) {
     const dimmed = focus && !(A.id === focus || B.id === focus ||
                               (focusNbr && (focusNbr.has(A.id) || focusNbr.has(B.id))));
     const onPath = st.pathEdges && st.pathEdges.has(Math.min(e.a, e.b) + '|' + Math.max(e.a, e.b));
-    let alpha, width, color;
+    let alpha, width, color, dashed = false;
     if (st.pathEdges) {
       // 有路径时其余边一律压到几乎看不见：这条链路本身才是要看的东西
       if (onPath) { alpha = 1; width = 2.6; color = 'rgba(56,189,248,0.95)'; }
@@ -761,6 +761,13 @@ function _drawBrain(st, now) {
       alpha = 0.16 + 0.55 * wgt;
       width = 0.9 + 1.8 * wgt;
       color = 'rgba(56,189,248,0.9)';
+    } else if (e.bridge) {
+      // 这条不是模型抽出来的关系，只是"两个实体在同一条记忆里出现过"。
+      // 分批抽取把图切成了几块，靠它补桥；用虚线和琥珀色明示来源不同。
+      dashed = true;
+      if (dimmed) { alpha = 0.03; width = 0.7; color = 'rgba(120,150,190,0.5)'; }
+      else if (active) { alpha = 0.75; width = 1.6; color = 'rgba(251,191,36,0.95)'; }
+      else { alpha = 0.28; width = 1.0; color = 'rgba(251,191,36,0.8)'; }
     } else if (active) {
       alpha = 0.92; width = 1.9; color = _rgba(B.color || '#38bdf8', 0.9);
     } else if (dimmed) {
@@ -773,10 +780,12 @@ function _drawBrain(st, now) {
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = color;
     ctx.lineWidth = width * (A.per + B.per) / 2 * 1.35;
+    if (dashed) ctx.setLineDash([3, 3.4]);
     ctx.beginPath();
     ctx.moveTo(A.sx, A.sy);
     ctx.quadraticCurveTo(cpx, cpy, B.sx, B.sy);
     ctx.stroke();
+    if (dashed) ctx.setLineDash([]);
     ctx.globalAlpha = 1;
 
     // 选中节点的关系上跑脉冲
