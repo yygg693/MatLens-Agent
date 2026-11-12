@@ -1,4 +1,5 @@
 """Tests for the memory-graph builder: batch merging and cache staleness."""
+import json
 import time
 
 from matlens_kit.api import graph_api
@@ -142,3 +143,47 @@ def test_empty_rebuild_never_overwrites():
     previous = {"nodes": [{"id": "n1", "label": "钙钛矿"}], "fallback": False}
 
     assert graph_api._should_replace(previous, {"nodes": [], "edges": []}) is False
+
+
+def test_manual_extract_keeps_previous_graph_when_extraction_degrades(monkeypatch, tmp_path):
+    """手动点"重新抽取"也得过降级门：一次失败不该把好图换掉。"""
+    cache = tmp_path / "graph.json"
+    cache.write_text(
+        json.dumps({"nodes": [{"id": "n1", "label": "钙钛矿"}], "edges": [], "fallback": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(graph_api, "_GRAPH_PATH", cache)
+    monkeypatch.setattr(graph_api, "_graph_auto_build_enabled", lambda: True)
+    monkeypatch.setattr(
+        graph_api, "_build_graph",
+        lambda force=False: {"nodes": [{"id": "m1", "label": "一整句记忆"}],
+                             "edges": [], "fallback": True},
+    )
+
+    out = graph_api.extract_graph()
+
+    assert out["fallback"] is True
+    assert out["skipped"] is True
+    saved = json.loads(cache.read_text(encoding="utf-8"))
+    assert saved["fallback"] is False
+    assert saved["nodes"][0]["label"] == "钙钛矿"
+
+
+def test_manual_extract_writes_when_extraction_succeeds(monkeypatch, tmp_path):
+    cache = tmp_path / "graph.json"
+    cache.write_text(
+        json.dumps({"nodes": [{"id": "n1", "label": "旧"}], "edges": [], "fallback": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(graph_api, "_GRAPH_PATH", cache)
+    monkeypatch.setattr(graph_api, "_graph_auto_build_enabled", lambda: True)
+    monkeypatch.setattr(
+        graph_api, "_build_graph",
+        lambda force=False: {"nodes": [{"id": "n1", "label": "新"}], "edges": [], "fallback": False},
+    )
+
+    out = graph_api.extract_graph()
+
+    assert out.get("skipped") is None
+    saved = json.loads(cache.read_text(encoding="utf-8"))
+    assert saved["nodes"][0]["label"] == "新"

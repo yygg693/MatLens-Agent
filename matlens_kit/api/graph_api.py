@@ -419,8 +419,15 @@ def extract_graph() -> Dict[str, Any]:
             "message": "已关闭记忆图谱自动构建",
             "auto_build": False,
         }
+    previous = _graph_cache()
     with _graph_lock:
         g = _build_graph(force=True)
+        # 手动触发同样要过这道门：抽取降级时返回结果，但不允许把好图覆盖掉。
+        if not _should_replace(previous, g):
+            g["skipped"] = True
+            g["message"] = "本次抽取降级为启发式结果，已保留原有图谱未覆盖"
+            g.setdefault("auto_build", True)
+            return g
         _save_cache(g)
         g.setdefault("auto_build", True)
         return g
