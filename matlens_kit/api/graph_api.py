@@ -15,6 +15,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -173,13 +174,15 @@ def _llm_extract(memos: List[Dict[str, Any]],
         "id 用英文短词或数字，保持引用一致；只输出 JSON，不要多余文字。\n"
         "命名规则（重要）：① 每个实体只用一个规范名，取记忆里最短通行写法（不超过 16 字），"
         "不要把别名、分子式、参数堆成一个长名字；② 关于用户的实体一律用「用户」，"
-        "不要写姓名、学校、年级、身份；③ 同一实体的不同写法只能出现一个节点。"
+        "不要写姓名、学校、年级、身份；③ 同一实体的不同写法只能出现一个节点；"
+        "④ 只要与下面「已有实体」里的某个名称指同一对象，就**原样使用那个名称**，"
+        "不要再缩短、改写或换一种说法——名字一旦变了，图上就会出现两个本该是一个的节点。"
     )
     known_hint = ""
     if known:
         known_hint = (
             "\n\n已有实体（若含义相同，请直接复用下列完全相同的名称，不要另起新名）：\n"
-            + "、".join(known[:150])
+            + "、".join(known[:200])
         )
     user_prompt = f"记忆列表：\n{corpus}{known_hint}\n\n请输出图谱 JSON。"
 
@@ -192,6 +195,9 @@ def _llm_extract(memos: List[Dict[str, Any]],
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            # 抽取必须是确定性的：否则同一批记忆重建两次会得到两套实体名，
+            # 实体归一配置、结构诊断的历史对比全部失效
+            temperature=0,
         )
         content = resp.choices[0].message.content
         data = json.loads(content)
@@ -224,6 +230,108 @@ def _heuristic_graph(memos: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 GRAPH_BATCH_SIZE = 45
 
+# 材料写法里的下标/上标（Ce₀.₇₈、O₂₋δ）。NFKC 能处理大部分，但下标负号和
+# 上标数字它不认，得手工兜一层。
+_SUB_MAP = str.maketrans({
+    "₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
+    "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+    "₊": "+", "₋": "-",
+    "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
+    "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+    "⁺": "+", "⁻": "-",
+    # NFKC 会把下标负号转成 U+2212 数学减号，跟 ASCII 的 '-' 不相等
+    "−": "-", "–": "-", "—": "-", "﹣": "-",
+})
+
+# 上位类别词：出现在别的名字里是正常的上下位关系，不代表同一个实体
+_GENERIC_WORDS = {
+    "电池", "电解质", "氧化物", "界面", "阻抗", "稳定性", "材料", "方法",
+    "性质", "参数", "用户", "实验", "结论", "其他", "论文", "文献", "不锈钢",
+    "合金", "高温合金", "钛合金", "铝合金", "碳钢", "电极", "负极", "正极",
+    "涂层", "薄膜", "催化剂", "纳米", "复合", "掺杂", "共掺杂", "体系",
+}
+
+# 这些前缀说明长名是"基础手段 + 另一种方法"的组合，不是同一个东西
+_COMPOSITE_PREFIXES = ("ml-", "ai-", "dft-", "operando-", "in-situ", "insitu",
+                       "机器学习", "计算", "模拟", "原位")
+
+
+def _normalize_label(label: str) -> str:
+    """实体名的比对形式：下标/上标折成普通字符、全角转半角、去掉空白。
+
+    只用来判断两个写法是不是同一个实体；展示仍用原 label——材料符号里的下标是
+    专业写法（Ce₀.₇₈），不该为了比对把它抹平。
+    """
+    s = unicodedata.normalize("NFKC", str(label or ""))
+    s = s.translate(_SUB_MAP)
+    s = re.sub(r"\s+", "", s)
+    return s.casefold()
+
+
+def _merge_candidates(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """找出"名字可能指同一个东西"的实体对，只给证据，不自动合并。
+
+    材料名里的重复大多是上位/下位或同族不同牌号——`304不锈钢` 与 `316不锈钢` 差一个
+    牌号就是两种材料，`高温合金` 与 `镍基高温合金` 是上下位，`Gd掺杂CeO₂` 与
+    `GDC-Ca共掺杂` 差一个掺杂元素。合并它们等于替用户下错误的材料学断言，所以这里
+    只把可疑对列出来。三条依据：括号别名、一方完整包含另一方，且要求同类别、
+    短的一方不是上位类别词、两边不是只差数字的牌号。
+    """
+    items = [(str(n.get("id")), str(n.get("label") or ""), str(n.get("category") or ""))
+             for n in nodes]
+    label_of = {i: lb for i, lb, _ in items}
+    cat_of = {i: c for i, _, c in items}
+    norm = {i: _normalize_label(lb) for i, lb, _ in items}
+
+    out: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add(a: str, b: str, reason: str) -> None:
+        if a == b:
+            return
+        pair = tuple(sorted((a, b)))
+        if pair in seen:
+            return
+        seen.add(pair)
+        out.append({"a": pair[0], "b": pair[1],
+                    "a_label": label_of[pair[0]], "b_label": label_of[pair[1]],
+                    "reason": reason})
+
+    # 依据一：括号别名 —— 钛酸锂(LTO) 里的 LTO 若也单独成节点，就是同一个
+    for nid, lb, _ in items:
+        m = re.match(r"^(.+?)\(([^()]+)\)$", lb.strip())
+        if not m:
+            continue
+        targets = {_normalize_label(m.group(1))}
+        alias = m.group(2).strip()
+        if len(alias) >= 2:
+            targets.add(_normalize_label(alias))
+        for other, other_lb, _ in items:
+            if other != nid and norm[other] in targets:
+                add(nid, other, "括号别名")
+
+    # 依据二：一方完整包含另一方（缩写如 GDC ⊂ GDC-Ca共掺杂 也走这条）
+    for i, (a_id, a_lb, a_cat) in enumerate(items):
+        for b_id, b_lb, b_cat in items[i + 1:]:
+            if a_cat != b_cat:
+                continue  # 跨类别包含几乎都是上位概念，不是同物异名
+            na, nb = norm[a_id], norm[b_id]
+            short, long_label, short_label = (
+                (na, nb, a_lb) if len(na) <= len(nb) else (nb, na, b_lb)
+            )
+            if len(short) < 3 or short not in long_label:
+                continue
+            if short_label.strip().casefold() in _GENERIC_WORDS:
+                continue  # 上位类别词被包含是正常的
+            if re.sub(r"[0-9.]", "", na) == re.sub(r"[0-9.]", "", nb):
+                continue  # 只差数字：同族不同牌号（304/316 不锈钢），不是同一个
+            longer = nb if short == na else na
+            if longer.startswith(_COMPOSITE_PREFIXES):
+                continue  # ML-XPS 与 XPS：一个是组合手段，一个是基础表征
+            add(a_id, b_id, "名称包含")
+
+    return out
+
 
 def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
     """把分批抽取的结果合并成一张图。
@@ -235,6 +343,7 @@ def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
     """
     nodes: List[Dict[str, Any]] = []
     by_label: Dict[str, str] = {}
+    by_id: Dict[str, Dict[str, Any]] = {}
     id_maps: List[Dict[str, str]] = []
 
     for part in parts:
@@ -246,16 +355,24 @@ def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
                 label = str(n.get("label") or "").strip()
                 if not label:
                     continue
-                key = label.casefold()
+                # 比对用归一形式：Ce₀.₇₈ 与 Ce0.78 是同一种写法，不该各占一个节点
+                key = _normalize_label(label)
                 nid = by_label.get(key)
                 if nid is None:
                     nid = "n%d" % len(nodes)
                     by_label[key] = nid
-                    nodes.append({
+                    node = {
                         "id": nid,
                         "label": label,
                         "category": n.get("category") or "其他",
-                    })
+                        "aliases": [],
+                    }
+                    nodes.append(node)
+                    by_id[nid] = node
+                else:
+                    node = by_id[nid]
+                    if label != node["label"] and label not in node["aliases"]:
+                        node["aliases"].append(label)
                 local[str(n.get("id") or "")] = nid
                 local.setdefault(label, nid)
         id_maps.append(local)
@@ -282,6 +399,105 @@ def _merge_graph_parts(parts: List[Any]) -> Dict[str, Any]:
                           "label": rel, "kind": "semantic"})
 
     return {"nodes": nodes, "edges": edges}
+
+
+_ENTITY_MERGE_PATH = Path(os.path.expanduser("~/.matlens/entity_merge.json"))
+
+
+def _load_entity_merge() -> List[Dict[str, Any]]:
+    """读人工复核过的同物异名归并配置（~/.matlens/entity_merge.json）。
+
+    配置只在本机、不进仓库——里面的实体名来自个人记忆内容。删掉这个文件就回到
+    "每种写法各占一个节点"的行为，所以归并天然可撤销。
+    """
+    try:
+        raw = json.loads(_ENTITY_MERGE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    groups = raw.get("groups") if isinstance(raw, dict) else raw
+    if not isinstance(groups, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        canon = str(g.get("canonical") or "").strip()
+        aliases = [str(a).strip() for a in (g.get("aliases") or []) if str(a).strip()]
+        if canon and aliases:
+            out.append({"canonical": canon, "aliases": aliases,
+                        "why": str(g.get("why") or "")})
+    return out
+
+
+def _apply_entity_merge(data: Dict[str, Any]) -> Dict[str, Any]:
+    """把同一实体的多种写法并成一个节点，边随节点一起重映射。
+
+    被并掉的写法不丢弃，收进规范节点的 aliases——前端详情里仍能看到它原本怎么写，
+    这比"悄悄改名"要好，用户随时能核对合并到底对不对。
+    """
+    groups = _load_entity_merge()
+    nodes = data.get("nodes") or []
+    if not groups or not nodes:
+        return data
+
+    by_label = {str(n.get("label") or ""): n for n in nodes}
+    by_norm: Dict[str, Dict[str, Any]] = {}
+    for n in nodes:
+        by_norm.setdefault(_normalize_label(n.get("label")), n)
+
+    def resolve(name: str) -> Optional[Dict[str, Any]]:
+        return by_label.get(name) or by_norm.get(_normalize_label(name))
+
+    remap: Dict[str, str] = {}
+    absorbed: List[str] = []
+    for g in groups:
+        # 名字是抽取出来的，重建时可能换写法；只要这一组里有两个名字在图上，
+        # 就用其中一个当规范节点，而不是因为 canonical 暂时缺失就整组放弃。
+        present: List[Dict[str, Any]] = []
+        for nm in [g["canonical"], *g["aliases"]]:
+            node = resolve(nm)
+            if node is not None and all(node["id"] != p["id"] for p in present):
+                present.append(node)
+        if len(present) < 2:
+            continue
+        target = resolve(g["canonical"]) or min(
+            present, key=lambda n: len(str(n.get("label") or "")))
+        for src in present:
+            if src["id"] == target["id"]:
+                continue
+            remap[src["id"]] = target["id"]
+            src_label = str(src.get("label") or "")
+            absorbed.append(src_label)
+            al = target.setdefault("aliases", [])
+            if src_label != target["label"] and src_label not in al:
+                al.append(src_label)
+        if g.get("why"):
+            target["merged_why"] = g["why"]
+            target["preferred_label"] = g["canonical"]
+
+    if not remap:
+        return data
+
+    kept = [n for n in nodes if n["id"] not in remap]
+    seen = set()
+    edges: List[Dict[str, Any]] = []
+    for e in data.get("edges") or []:
+        src = remap.get(e.get("source"), e.get("source"))
+        dst = remap.get(e.get("target"), e.get("target"))
+        if not src or not dst or src == dst:
+            continue
+        key = (src, dst, str(e.get("label") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        e2 = dict(e)
+        e2["source"], e2["target"] = src, dst
+        edges.append(e2)
+
+    data["nodes"] = kept
+    data["edges"] = edges
+    data["merged_labels"] = absorbed
+    return data
 
 
 COOC_BRIDGE_LABEL = "同条记忆提及"
@@ -357,7 +573,12 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
         return {"nodes": [], "edges": [], "empty": True, "message": "暂无记忆可供构图"}
 
     parts: List[Any] = []
-    known: List[str] = []
+    # 从上一版图的名字起步，而不是从空开始：否则每次重建模型都会另起一套写法，
+    # 用户看到的实体名跟着图一起漂，按名字写的归并配置也会全部失效。
+    cached = _graph_cache() or {}
+    known: List[str] = [str(n.get("label") or "").strip()
+                        for n in (cached.get("nodes") or [])
+                        if isinstance(n, dict) and str(n.get("label") or "").strip()]
     for start in range(0, len(memos), GRAPH_BATCH_SIZE):
         chunk = memos[start:start + GRAPH_BATCH_SIZE]
         # 把前面批次已抽到的实体名带上，让后一批复用同名而不是另起一套写法
@@ -371,6 +592,8 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
                 known.append(label)
 
     data = _merge_graph_parts(parts)
+    # 先按人工复核过的配置归一，再补桥：归一之后很多对本来就连通了，桥会更少
+    data = _apply_entity_merge(data)
     fell_back = bool(parts) and all(
         isinstance(p, dict) and p.get("fallback") for p in parts
     )
@@ -379,6 +602,9 @@ def _build_graph(force: bool = False) -> Dict[str, Any]:
     for bridge in _cooc_bridges(data.get("nodes", []), memos, data.get("edges", [])):
         bridge["id"] = "e%d" % len(data["edges"])
         data["edges"].append(bridge)
+
+    # 疑似同物异名：只提示，不替用户合并（见 _merge_candidates 的取舍说明）
+    data["merge_candidates"] = _merge_candidates(data.get("nodes", []))
 
     # 着色 + 尺寸
     for n in data.get("nodes", []):

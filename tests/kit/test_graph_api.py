@@ -283,3 +283,115 @@ def test_llm_extract_hands_known_labels_to_the_model(monkeypatch):
     user_prompt = captured["messages"][1]["content"]
     assert "固态电池" in user_prompt and "用户" in user_prompt
     assert "复用" in user_prompt
+
+
+def test_normalize_label_folds_subscripts():
+    """Ce₀.₇₈ 与 Ce0.78 是同一种写法，比对时必须认成同一个。"""
+    assert graph_api._normalize_label("Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ") == \
+        graph_api._normalize_label("Ce0.78Gd0.20Ca0.02O2-δ")
+
+
+def test_merge_parts_fold_two_spellings_into_one_node():
+    parts = [
+        {"nodes": [{"id": "1", "label": "Ce₀.₇₈O₂₋δ", "category": "材料"}], "edges": []},
+        {"nodes": [{"id": "1", "label": "Ce0.78O2-δ", "category": "材料"}], "edges": []},
+    ]
+    graph = graph_api._merge_graph_parts(parts)
+
+    assert len(graph["nodes"]) == 1
+    assert graph["nodes"][0]["label"] == "Ce₀.₇₈O₂₋δ"
+    assert graph["nodes"][0]["aliases"] == ["Ce0.78O2-δ"]
+
+
+def test_merge_candidates_flags_abbreviation_inside_full_name():
+    nodes = [{"id": "n0", "label": "GDC-Ca共掺杂", "category": "材料"},
+             {"id": "n1", "label": "GDC", "category": "材料"}]
+
+    cands = graph_api._merge_candidates(nodes)
+
+    assert len(cands) == 1
+    assert cands[0]["reason"] == "名称包含"
+
+
+def test_merge_candidates_flags_bracket_alias():
+    nodes = [{"id": "n0", "label": "钛酸锂(LTO)", "category": "材料"},
+             {"id": "n1", "label": "LTO", "category": "材料"}]
+
+    cands = graph_api._merge_candidates(nodes)
+
+    assert len(cands) == 1
+    assert cands[0]["reason"] == "括号别名"
+
+
+def test_merge_candidates_ignore_cross_category_containment():
+    """「GDC」是材料、「GDC论文大修」是结论，包含关系不构成同物异名。"""
+    nodes = [{"id": "n0", "label": "GDC", "category": "材料"},
+             {"id": "n1", "label": "GDC论文大修", "category": "结论"}]
+
+    assert graph_api._merge_candidates(nodes) == []
+
+
+def test_merge_candidates_ignore_generic_upper_terms():
+    nodes = [{"id": "n0", "label": "高温合金", "category": "材料"},
+             {"id": "n1", "label": "镍基高温合金", "category": "材料"}]
+
+    assert graph_api._merge_candidates(nodes) == []
+
+
+def test_merge_candidates_ignore_steel_grades():
+    nodes = [{"id": "n0", "label": "304不锈钢", "category": "材料"},
+             {"id": "n1", "label": "316不锈钢", "category": "材料"},
+             {"id": "n2", "label": "430不锈钢", "category": "材料"}]
+
+    assert graph_api._merge_candidates(nodes) == []
+
+
+def test_apply_entity_merge_folds_alias_and_remaps_edges(tmp_path, monkeypatch):
+    cfg = tmp_path / "entity_merge.json"
+    cfg.write_text(json.dumps({"groups": [
+        {"canonical": "GDC-Ca共掺杂", "aliases": ["Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ"], "why": "同一材料"}
+    ]}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(graph_api, "_ENTITY_MERGE_PATH", cfg)
+
+    data = {
+        "nodes": [
+            {"id": "n0", "label": "GDC-Ca共掺杂", "category": "材料"},
+            {"id": "n1", "label": "Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ", "category": "材料"},
+            {"id": "n2", "label": "界面阻抗", "category": "性质"},
+        ],
+        "edges": [
+            {"id": "e0", "source": "n1", "target": "n2", "label": "导致"},
+            {"id": "e1", "source": "n0", "target": "n1", "label": "别名"},
+        ],
+    }
+
+    out = graph_api._apply_entity_merge(data)
+
+    assert [n["id"] for n in out["nodes"]] == ["n0", "n2"]
+    assert out["nodes"][0]["aliases"] == ["Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ"]
+    assert out["merged_labels"] == ["Ce₀.₇₈Gd₀.₂₀Ca₀.₀₂O₂₋δ"]
+    # 指向被并节点的边改指规范节点；两端并成同一节点的自环被丢掉
+    assert [(e["source"], e["target"]) for e in out["edges"]] == [("n0", "n2")]
+
+
+def test_apply_entity_merge_no_config_leaves_graph_untouched(tmp_path, monkeypatch):
+    monkeypatch.setattr(graph_api, "_ENTITY_MERGE_PATH", tmp_path / "missing.json")
+    data = {"nodes": [{"id": "n0", "label": "A", "category": "材料"}], "edges": []}
+
+    out = graph_api._apply_entity_merge(data)
+
+    assert out["nodes"] == data["nodes"]
+
+
+def test_apply_entity_merge_skips_groups_whose_canonical_is_absent(tmp_path, monkeypatch):
+    cfg = tmp_path / "entity_merge.json"
+    cfg.write_text(json.dumps({"groups": [
+        {"canonical": "图上没有的名字", "aliases": ["A"], "why": "x"}
+    ]}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(graph_api, "_ENTITY_MERGE_PATH", cfg)
+    data = {"nodes": [{"id": "n0", "label": "A", "category": "材料"}], "edges": []}
+
+    out = graph_api._apply_entity_merge(data)
+
+    assert len(out["nodes"]) == 1
+    assert "merged_labels" not in out

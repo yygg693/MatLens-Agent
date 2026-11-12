@@ -279,12 +279,22 @@ function _renderDetailPanel(nodeId) {
       '<span class="mem-cat" style="background:' + color + '22;color:' + color + '">' + esc(cat) + '</span>' +
       ' ' + esc(e.label || '关系') + ' ' + dir + ' ' + esc(otherLabel) + '</div>';
   }).join('');
+  const aliases = Array.isArray(node.aliases) ? node.aliases : [];
+  const aliasHtml = aliases.length
+    ? '<div style="font-size:11.5px;color:var(--ml-text-dim);line-height:1.7;margin-bottom:6px">' +
+      '同一实体的其他写法已并入此节点：' + aliases.map(a => esc(a)).join('、') + '</div>' +
+      (node.merged_why
+        ? '<div style="font-size:11px;color:var(--ml-text-faint);line-height:1.6;margin-bottom:6px">合并依据：' +
+          esc(node.merged_why) + '</div>'
+        : '')
+    : '';
   panel.innerHTML =
     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
     '<button data-g3-back style="background:none;border:0;color:#7dd3fc;font-size:11.5px;cursor:pointer;padding:0">← 全部脑区</button>' +
     '</div>' +
     '<div style="font-weight:700;margin-bottom:4px;font-size:14px">' + esc(node.label || node.id) + '</div>' +
     '<div style="font-size:11px;color:var(--ml-text-faint);margin-bottom:10px">' + esc(cat) + ' · ' + rel.length + ' 条关联</div>' +
+    aliasHtml +
     '<div style="font-size:12px;color:var(--ml-text-dim);line-height:1.7;margin-bottom:8px">' +
     '该实体由 DeepSeek 从对话记忆中抽取，来源为本项目积累的材料科研对话。</div>' +
     (relHtml || '<div style="font-size:12px;color:var(--ml-text-faint)">暂无关联关系</div>');
@@ -366,6 +376,10 @@ function _renderLegend(panel, d) {
   nodes.forEach(n => { if (!hub || degOf(n) > degOf(hub)) hub = n; });
   const hubDeg = hub ? degOf(hub) : 0;
   const total = nodes.length || 1;
+  // 归并过的节点：同一实体的不同写法已经收成一个，这里把结果摆出来让人能核对
+  const mergedNodes = nodes.filter(n => Array.isArray(n.aliases) && n.aliases.length);
+  const mergedTotal = mergedNodes.reduce((s, n) => s + n.aliases.length, 0);
+  const candidates = Array.isArray(d.merge_candidates) ? d.merge_candidates : [];
   const diagRow = (k, v, hint) =>
     '<div style="padding:6px 0;font-size:12px">' +
     '<div style="display:flex;gap:8px;align-items:baseline">' +
@@ -409,7 +423,18 @@ function _renderLegend(panel, d) {
       hubDeg > 12 ? '连线高度集中，这张图会看起来像星形而不是网络' : '枢纽与其余实体差距不大') +
     diagRow('只连一条', leaf.length + ' / ' + nodes.length,
       '叶子节点占 ' + Math.round(leaf.length / total * 100) + '%，关系网还很浅') +
+    (mergedTotal
+      ? diagRow('已归并', mergedTotal + ' 个写法',
+          mergedNodes.slice(0, 2).map(n => esc(n.aliases[0]) + ' → ' + esc(n.label)).join('，') +
+          (mergedNodes.length > 2 ? ' 等' : ''))
+      : '') +
     '</div>' +
+    (candidates.length
+      ? '<div style="margin-top:10px;font-size:10.5px;color:var(--ml-text-faint);line-height:1.6">' +
+        '另有 ' + candidates.length + ' 对名字可能指同一实体（' +
+        candidates.slice(0, 3).map(c => esc(c.a_label) + ' / ' + esc(c.b_label)).join('、') +
+        '），没有自动合并——上下位、不同牌号、不同掺杂量在字面上也可能很像。</div>'
+      : '') +
     (mode === 'cooc' && cooc
       ? '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--ml-border);' +
         'font-size:10.5px;color:var(--ml-text-faint);line-height:1.6">' +
